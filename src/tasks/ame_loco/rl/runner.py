@@ -9,7 +9,9 @@ import torch.nn as nn
 import numpy as np
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 
-from src.tasks.ame_loco.rl.ame_encoder import ProprioEncoder, AME2Encoder, MoECritic
+from src.tasks.ame_loco.rl.ame_encoder import (
+    ProprioEncoder, AME2Encoder, SimpleMapEncoder, MoECritic,
+)
 
 
 class AME2Actor(nn.Module):
@@ -21,7 +23,7 @@ class AME2Actor(nn.Module):
     """
 
     def __init__(self, num_actions=29, proprio_dim=96,
-                 map_channels=3, map_height=36, map_width=14,
+                 map_channels=3, map_height=18, map_width=7,
                  proprio_hidden=128, encoder_proprio_dim=64,
                  local_feat_dim=64, global_feat_dim=64,
                  decoder_hidden=(512, 256, 128)):
@@ -66,31 +68,72 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
 
     def __init__(self, env, cfg, log_dir, device="cuda:0", **kwargs):
         super().__init__(env, cfg, log_dir, device, **kwargs)
+        # Immediately replace actor after parent init completes
+        if hasattr(self, "alg") and hasattr(self.alg, "policy"):
+            self._install_ame2_actor()
+        else:
+            print("[AME] WARNING: alg/policy not available after init, skipping AME-2")
 
-    def _setup_algorithm(self):
-        """Set up algorithm, replace actor with AME-2 encoder, optionally replace critic."""
-        super()._setup_algorithm()
-
-        if not hasattr(self, "alg") or not hasattr(self.alg, "policy"):
-            return
-
+    def _install_ame2_actor(self):
+        """Replace actor with AME-2 encoder, add SimpleMapEncoder for critic."""
         policy = self.alg.policy
 
-        # ── Replace actor with AME-2 encoder ──
+        # ── Actor ──
         num_actions = self.env.num_actions
         ame_actor = AME2Actor(num_actions=num_actions).to(self.device)
-        # Copy input/output dims from the original MLP actor
-        if hasattr(policy, 'actor') and hasattr(policy.actor, 'out_features'):
-            pass  # AME2Actor handles its own dims
         policy.actor = ame_actor
-        print(f"[AME] AME-2 encoder actor installed: "
-              f"{sum(p.numel() for p in ame_actor.parameters())} params")
+        params = sum(p.numel() for p in ame_actor.parameters())
+        print(f"[AME] AME-2 encoder actor installed: {params} params")
+        print(f"[AME] AME-2 architecture:\n{ame_actor}")
+
+        # ── Critic: wrap with SimpleMapEncoder (CNN downsample, no MHA) ──
+        # The critic receives full obs including raw map.
+        # We insert a CNN encoder before the MLP to reduce map dimensionality.
+        proprio_dim = 96
+        map_channels = 3
+        map_height = 18
+        map_width = 7
+        orig_critic = policy.critic  # the original MLP
+
+        class CriticWithMapEncoder(nn.Module):
+            """Wraps critic MLP: downsamples map via CNN, then concats with proprio."""
+            def __init__(self, proprio_dim, map_c, map_h, map_w, orig_mlp):
+                super().__init__()
+                self.proprio_dim = proprio_dim
+                self.map_c = map_c
+                self.map_h = map_h
+                self.map_w = map_w
+                self.map_encoder = SimpleMapEncoder(
+                    map_channels=map_c, map_height=map_h, map_width=map_w,
+                    output_dim=64,
+                )
+                # Adjust first Linear layer input dim to account for encoded map
+                old_in = orig_mlp[0].in_features  # was full obs dim
+                new_in = proprio_dim + 64  # proprio + 64-dim encoded map
+                # Replace first layer
+                new_first = nn.Linear(new_in, orig_mlp[0].out_features)
+                # Copy remaining layers
+                remaining = orig_mlp[1:]
+                self.mlp = nn.Sequential(new_first, *remaining)
+
+            def forward(self, obs):
+                proprio = obs[:, :self.proprio_dim]
+                map_flat = obs[:, self.proprio_dim:]
+                elev_map = map_flat.view(-1, self.map_c, self.map_h, self.map_w)
+                map_feat = self.map_encoder(elev_map)
+                combined = torch.cat([proprio, map_feat], dim=-1)
+                return self.mlp(combined)
+
+        policy.critic = CriticWithMapEncoder(
+            proprio_dim, map_channels, map_height, map_width, orig_critic
+        ).to(self.device)
+        c_params = sum(p.numel() for p in policy.critic.parameters())
+        print(f"[AME] Critic with SimpleMapEncoder installed: {c_params} params")
 
         # ── Optionally replace critic with MoE ──
         use_moe = self.cfg.get("use_moe_critic", False)
         if not use_moe:
             return
-
         critic_dim = getattr(self.env, "num_critic_obs", self.env.num_obs)
         num_experts = self.cfg.get("moe_num_experts", 8)
         expert_hidden = self.cfg.get("moe_expert_hidden", 256)

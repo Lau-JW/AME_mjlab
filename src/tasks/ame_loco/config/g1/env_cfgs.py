@@ -58,9 +58,9 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         debug_vis=True,
     )
     # GT elevation map sensor (dense grid, teacher)
-    # 36×14 grid at 8cm, centered at (0.6, 0) in base frame (paper Sec V-E1)
+    # 18×7 grid at 8cm, centered at (0.6, 0) — reduced from 36×14 for G1/memory
     elev_map_sensor = create_elevation_map_sensor_cfg(
-        map_height=36, map_width=14, resolution=0.08,
+        map_height=18, map_width=7, resolution=0.08,
         center_x=0.6, center_y=0.0,
         frame_name="torso_link",
         sensor_name="elevation_map_scan",
@@ -125,11 +125,11 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
         "actions": ObservationTermCfg(func=envs_mdp.last_action),
-        # Elevation map — GT elevation map (3ch: xyz, 36x14 grid)
+        # Elevation map — GT elevation map (3ch: xyz, 18x7 grid)
         "elevation_map": ObservationTermCfg(
             func=sample_gt_elevation_map,
             params={
-                "map_height": 36, "map_width": 14,
+                "map_height": 18, "map_width": 7,
                 "resolution": 0.08,
                 "center_x": 0.6, "center_y": 0.0,
                 "sensor_name": "elevation_map_scan",
@@ -374,7 +374,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 terrain_generator=replace(ROUGH_TERRAINS_CFG),
                 max_init_terrain_level=5,
             ),
-            num_envs=1 if play else 4800,
+            num_envs=1 if play else 2048,
             extent=2.0,
         ),
         observations=observations,
