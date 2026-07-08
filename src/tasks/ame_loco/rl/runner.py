@@ -169,9 +169,9 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
 
             # Build column→name mapping from terrain generator proportions (once)
             if not hasattr(self, '_terrain_col_names'):
-                from mjlab.terrains.config import ROUGH_TERRAINS_CFG
-                sub_cfgs = list(ROUGH_TERRAINS_CFG.sub_terrains.values())
-                sub_keys = list(ROUGH_TERRAINS_CFG.sub_terrains.keys())
+                from src.tasks.ame_loco.mdp.terrain import SIMPLE_TERRAINS_CFG
+                sub_cfgs = list(SIMPLE_TERRAINS_CFG.sub_terrains.values())
+                sub_keys = list(SIMPLE_TERRAINS_CFG.sub_terrains.keys())
                 props = np.array([s.proportion for s in sub_cfgs])
                 props /= props.sum()
                 cumsum = np.cumsum(props)

@@ -36,7 +36,7 @@ from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, ObjRef,
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg, terrain_levels_vel
 from mjlab.terrains import TerrainEntityCfg
-from mjlab.terrains.config import ROUGH_TERRAINS_CFG
+from src.tasks.ame_loco.mdp.terrain import SIMPLE_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 from mjlab.viewer import ViewerConfig
 
@@ -403,7 +403,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             sensors=(terrain_scan, elev_map_sensor, feet_ground_cfg, body_contact_cfg),
             terrain=TerrainEntityCfg(
                 terrain_type="generator",
-                terrain_generator=replace(ROUGH_TERRAINS_CFG),
+                terrain_generator=replace(SIMPLE_TERRAINS_CFG),
                 max_init_terrain_level=5,
             ),
             num_envs=1 if play else 2048,
