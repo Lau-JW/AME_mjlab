@@ -309,6 +309,145 @@ def undesired_contacts(env: "ManagerBasedRlEnv") -> torch.Tensor:
 
 
 # ──────────────────────────────────────────────
+# Torque & limits (from AME_Locomotion)
+# ──────────────────────────────────────────────
+
+
+def dof_torques_l2(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize joint torques squared."""
+    try:
+        asset = env.scene["robot"]
+        return torch.sum(asset.data.actuator_force ** 2, dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def dof_torques_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize joint torques exceeding 80% of effort limit."""
+    try:
+        asset = env.scene["robot"]
+        torque = torch.abs(asset.data.actuator_force)
+        limits = torch.tensor([88.0, 88.0, 139.0, 139.0, 25.0, 25.0, 25.0, 5.0],
+                              device=env.device, dtype=torch.float32)
+        excess = torque - 0.8 * limits
+        return torch.sum(torch.clamp(excess, min=0), dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+# ──────────────────────────────────────────────
+# Feet rewards (from AME_Locomotion)
+# ──────────────────────────────────────────────
+
+
+def feet_air_time(env: "ManagerBasedRlEnv", threshold: float = 0.6) -> torch.Tensor:
+    """Reward sustained foot air time."""
+    try:
+        sensor = env.scene["feet_ground_contact"]
+        air_time = sensor.data.current_air_time  # (B, n_feet)
+        if air_time is None:
+            return torch.zeros(env.num_envs, device=env.device)
+        reward = torch.clamp(air_time - threshold, max=0.5)
+        return torch.sum(reward, dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def feet_air_time_variance(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize variance in foot air/contact time."""
+    try:
+        sensor = env.scene["feet_ground_contact"]
+        air_time = sensor.data.current_air_time
+        if air_time is not None:
+            at = torch.clamp(air_time, max=0.5)
+            return torch.var(at, dim=-1)
+    except Exception:
+        pass
+    return torch.zeros(env.num_envs, device=env.device)
+
+
+def feet_stumble(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize feet hitting vertical surfaces (horizontal force > 4× vertical)."""
+    try:
+        sensor = env.scene["feet_ground_contact"]
+        forces = sensor.data.force  # (B, n_feet, 3)
+        forces_z = torch.abs(forces[:, :, 2])
+        forces_xy = torch.norm(forces[:, :, :2], dim=-1)
+        return (forces_xy > 4 * forces_z).any(dim=-1).float()
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def feet_too_near(env: "ManagerBasedRlEnv", threshold: float = 0.2) -> torch.Tensor:
+    """Penalize feet being too close together."""
+    try:
+        asset = env.scene["robot"]
+        foot_pos = asset.data.body_link_pos_w[:, -2:, :]  # last 2 bodies = feet
+        distance = torch.norm(foot_pos[:, 0] - foot_pos[:, 1], dim=-1)
+        return torch.clamp(threshold - distance, min=0)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def feet_height_body(env: "ManagerBasedRlEnv", target_height: float = 0.1,
+                     tanh_mult: float = 2.0) -> torch.Tensor:
+    """Reward swinging foot clearance."""
+    try:
+        asset = env.scene["robot"]
+        foot_height = asset.data.body_link_pos_w[:, -2:, 2]
+        sensor = env.scene["feet_ground_contact"]
+        contact = sensor.data.found.float()
+        foot_vel = asset.data.body_link_lin_vel_w[:, -2:, :2]
+        speed = torch.norm(foot_vel, dim=-1)
+        # Reward when foot is in swing (not contact) and moving
+        swing = 1.0 - contact
+        height_error = (foot_height - target_height) ** 2
+        velocity_scale = torch.tanh(tanh_mult * speed)
+        reward = height_error * velocity_scale * swing
+        return torch.exp(-torch.sum(reward, dim=-1))
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def stand_still(env: "ManagerBasedRlEnv", command_name: str = "goal",
+                threshold: float = 0.1) -> torch.Tensor:
+    """Penalize joint deviation from default when no command."""
+    try:
+        cmd = env.command_manager.get_command(command_name)
+        cmd_norm = torch.norm(cmd[:, :2], dim=-1)
+        asset = env.scene["robot"]
+        dev = torch.sum(torch.abs(asset.data.joint_pos), dim=-1)  # default = 0
+        return dev * (cmd_norm < threshold).float()
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+# ──────────────────────────────────────────────
+# Joint coordination (from AME_Locomotion)
+# ──────────────────────────────────────────────
+
+
+def joint_coordination(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Reward cross-body coordination: L hip ∥ R shoulder, R hip ∥ L shoulder."""
+    try:
+        asset = env.scene["robot"]
+        jpos = asset.data.joint_pos
+        names = asset.joint_names
+        def idx(s): return [i for i, n in enumerate(names) if s in n.lower()]
+        l_hip = idx("left_hip_pitch")
+        r_hip = idx("right_hip_pitch")
+        l_shoulder = idx("left_shoulder_pitch")
+        r_shoulder = idx("right_shoulder_pitch")
+        if not (l_hip and r_hip and l_shoulder and r_shoulder):
+            return torch.zeros(env.num_envs, device=env.device)
+        pair1 = (jpos[:, l_hip[0]] - jpos[:, r_shoulder[0]]) ** 2
+        pair2 = (jpos[:, r_hip[0]] - jpos[:, l_shoulder[0]]) ** 2
+        return (pair1 + pair2) / 2
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+# ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 

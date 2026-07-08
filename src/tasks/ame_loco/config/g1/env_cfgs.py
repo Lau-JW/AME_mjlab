@@ -325,6 +325,33 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "undesired_contacts": RewardTermCfg(
             func=rwd.undesired_contacts, weight=-1.0,
         ),
+        "dof_torques_l2": RewardTermCfg(func=rwd.dof_torques_l2, weight=-1.5e-7),
+        "dof_torques_limits": RewardTermCfg(
+            func=rwd.dof_torques_limits, weight=-0.01,
+        ),
+        "feet_air_time": RewardTermCfg(
+            func=rwd.feet_air_time, weight=0.25,
+            params={"threshold": 0.6},
+        ),
+        "feet_air_time_variance": RewardTermCfg(
+            func=rwd.feet_air_time_variance, weight=-0.1,
+        ),
+        "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-1.0),
+        "feet_too_near": RewardTermCfg(
+            func=rwd.feet_too_near, weight=-1.0,
+            params={"threshold": 0.2},
+        ),
+        "joint_coordination": RewardTermCfg(
+            func=rwd.joint_coordination, weight=-0.1,
+        ),
+        "stand_still": RewardTermCfg(
+            func=rwd.stand_still, weight=-0.1,
+            params={"command_name": "goal", "threshold": 0.1},
+        ),
+        "feet_height_body": RewardTermCfg(
+            func=rwd.feet_height_body, weight=1.0,
+            params={"target_height": 0.1, "tanh_mult": 2.0},
+        ),
     }
 
     ##
