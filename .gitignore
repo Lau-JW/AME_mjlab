@@ -5,3 +5,5 @@ __pycache__/
 *.pt
 *.npz
 .DS_Store
+ame_mjlab.egg-info/
+logs/

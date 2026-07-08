@@ -334,7 +334,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
         "bad_orientation": TerminationTermCfg(
             func=term.bad_orientation_ame,
-            params={"limit_gx": 0.985, "limit_gy": 0.7, "limit_gz": 0.0},
+            params={"limit_gx": 0.7, "limit_gy": 0.6, "limit_gz": 0.0},
         ),
         "base_collision": TerminationTermCfg(
             func=term.base_collision,

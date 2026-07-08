@@ -139,11 +139,8 @@ class AME2Encoder(nn.Module):
         query = self.query_mlp(query_input).unsqueeze(1)  # (B, 1, global_feat_dim)
 
         # 6. Multi-Head Attention: query → weighted local features
-        # Project query to match local_feat_dim if needed
-        if global_feat_dim != local_features.shape[-1]:
-            query_proj = nn.Linear(global_feat_dim, local_features.shape[-1], device=query.device)(query)
-        else:
-            query_proj = query
+        # Both query and local features already share the same dim (local_feat_dim)
+        query_proj = query
 
         attn_out, attn_weights = self.mha(
             query=query_proj,
