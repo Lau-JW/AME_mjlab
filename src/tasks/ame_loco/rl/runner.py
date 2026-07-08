@@ -9,6 +9,7 @@ import torch.nn as nn
 import numpy as np
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 
+from rsl_rl.runners.on_policy_runner import _unpack_obs
 from src.tasks.ame_loco.rl.ame_encoder import (
     ProprioEncoder, AME2Encoder, SimpleMapEncoder, MoECritic,
 )
@@ -78,25 +79,49 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         """Replace actor with AME-2 encoder, add SimpleMapEncoder for critic."""
         policy = self.alg.policy
 
+        # Get actual observation dimensions from env
+        obs, extras = _unpack_obs(self.env.get_observations())
+        num_actor_obs = obs.shape[1]
+        num_critic_obs = extras["observations"].get("critic", obs).shape[1]
+
+        # Infer proprio vs map split: map is always 3 channels × grid
+        # Grid dims from sensor: need to match the actual sensor output
+        # For now: use total actor obs minus flat map size
+        map_channels = 3
+        # Compute map grid dims from the elevation map observation
+        try:
+            elev_term = self.env.env.cfg.observations["actor"].terms.get("elevation_map", None)
+            if elev_term:
+                map_h = elev_term.params.get("map_height", 18)
+                map_w = elev_term.params.get("map_width", 7)
+            else:
+                map_h, map_w = 18, 7
+        except Exception:
+            map_h, map_w = 18, 7
+
+        map_flat_dim = map_channels * map_h * map_w  # 3*18*7 = 378
+        actor_proprio_dim = num_actor_obs - map_flat_dim
+        critic_proprio_dim = num_critic_obs - map_flat_dim
+
+        print(f"[AME] Obs dims: actor={num_actor_obs}, critic={num_critic_obs}, "
+              f"proprio={actor_proprio_dim}/{critic_proprio_dim}, map={map_h}x{map_w}x{map_channels}")
+
         # ── Actor ──
         num_actions = self.env.num_actions
-        ame_actor = AME2Actor(num_actions=num_actions).to(self.device)
+        ame_actor = AME2Actor(num_actions=num_actions,
+                              proprio_dim=actor_proprio_dim,
+                              map_channels=map_channels,
+                              map_height=map_h, map_width=map_w).to(self.device)
         policy.actor = ame_actor
         params = sum(p.numel() for p in ame_actor.parameters())
         print(f"[AME] AME-2 encoder actor installed: {params} params")
         print(f"[AME] AME-2 architecture:\n{ame_actor}")
 
         # ── Critic: wrap with SimpleMapEncoder (CNN downsample, no MHA) ──
-        # The critic receives full obs including raw map.
         # We insert a CNN encoder before the MLP to reduce map dimensionality.
-        proprio_dim = 96
-        map_channels = 3
-        map_height = 18
-        map_width = 7
-        orig_critic = policy.critic  # the original MLP
+        orig_critic = policy.critic
 
         class CriticWithMapEncoder(nn.Module):
-            """Wraps critic MLP: downsamples map via CNN, then concats with proprio."""
             def __init__(self, proprio_dim, map_c, map_h, map_w, orig_mlp):
                 super().__init__()
                 self.proprio_dim = proprio_dim
@@ -107,12 +132,8 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                     map_channels=map_c, map_height=map_h, map_width=map_w,
                     output_dim=64,
                 )
-                # Adjust first Linear layer input dim to account for encoded map
-                old_in = orig_mlp[0].in_features  # was full obs dim
-                new_in = proprio_dim + 64  # proprio + 64-dim encoded map
-                # Replace first layer
+                new_in = proprio_dim + 64
                 new_first = nn.Linear(new_in, orig_mlp[0].out_features)
-                # Copy remaining layers
                 remaining = orig_mlp[1:]
                 self.mlp = nn.Sequential(new_first, *remaining)
 
@@ -125,7 +146,7 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                 return self.mlp(combined)
 
         policy.critic = CriticWithMapEncoder(
-            proprio_dim, map_channels, map_height, map_width, orig_critic
+            critic_proprio_dim, map_channels, map_h, map_w, orig_critic
         ).to(self.device)
         c_params = sum(p.numel() for p in policy.critic.parameters())
         print(f"[AME] Critic with SimpleMapEncoder installed: {c_params} params")
