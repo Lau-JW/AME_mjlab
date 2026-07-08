@@ -1,0 +1,7 @@
+logs/
+__pycache__/
+*.pyc
+*.onnx
+*.pt
+*.npz
+.DS_Store
