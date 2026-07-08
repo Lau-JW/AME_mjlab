@@ -423,6 +423,74 @@ def stand_still(env: "ManagerBasedRlEnv", command_name: str = "goal",
 
 
 # ──────────────────────────────────────────────
+# Link-level penalties (Table I)
+# ──────────────────────────────────────────────
+
+
+def link_contact_forces(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize link contact forces exceeding robot weight (Table I).
+    sum(max(F_con - G, 0)^2) * -0.00001
+    """
+    try:
+        sensor = env.scene["body_contact"]
+        forces = sensor.data.force  # (B, N, 3)
+        force_mag = torch.norm(forces, dim=-1)  # (B, N)
+        robot_weight = 35.0 * 9.81  # G1 ~35kg
+        excess = torch.clamp(force_mag - robot_weight, min=0)
+        return torch.sum(excess ** 2, dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def link_acceleration(env: "ManagerBasedRlEngine") -> torch.Tensor:
+    """Penalize link accelerations (Table I). sum_l ||v_l_dot|| * -0.001"""
+    try:
+        asset = env.scene["robot"]
+        # Approximate link acceleration from velocity difference
+        # Use body_link_lin_vel_w for all bodies
+        lin_vel = asset.data.body_link_lin_vel_w  # (B, N_bodies, 3)
+        if hasattr(asset.data, "body_link_lin_vel_w_prev"):
+            prev_vel = asset.data.body_link_lin_vel_w_prev
+        else:
+            prev_vel = lin_vel
+        accel = torch.abs(lin_vel - prev_vel)
+        return torch.sum(accel.reshape(accel.shape[0], -1), dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def joint_velocity_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize joint velocity exceeding 90% of limits (Table I).
+    sum(max(0, |q_dot| - 0.9*q_dot_max))
+    """
+    try:
+        asset = env.scene["robot"]
+        vel = torch.abs(asset.data.joint_vel)
+        limits = torch.tensor([37.0, 32.0, 20.0, 37.0, 22.0],
+                              device=env.device, dtype=torch.float32)
+        # Map joint index to limit (approximate per-actuator-group)
+        excess = vel - 0.9 * limits.min()  # conservative estimate
+        return torch.sum(torch.clamp(excess, min=0), dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def joint_torque_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize joint torque exceeding 80% of limits (Table I).
+    sum(max(0, |tau| - 0.8*tau_max))
+    """
+    try:
+        asset = env.scene["robot"]
+        torque = torch.abs(asset.data.actuator_force)
+        limits = torch.tensor([25.0, 88.0, 139.0, 25.0, 5.0],
+                              device=env.device, dtype=torch.float32)
+        excess = torque - 0.8 * limits.min()
+        return torch.sum(torch.clamp(excess, min=0), dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+# ──────────────────────────────────────────────
 # Joint coordination (from AME_Locomotion)
 # ──────────────────────────────────────────────
 

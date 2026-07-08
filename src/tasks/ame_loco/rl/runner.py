@@ -93,11 +93,11 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
             elev_term = self.env.env.cfg.observations["actor"].terms.get("elevation_map", None)
             if elev_term:
                 map_h = elev_term.params.get("map_height", 18)
-                map_w = elev_term.params.get("map_width", 7)
+                map_w = elev_term.params.get("map_width", 13)
             else:
-                map_h, map_w = 18, 7
+                map_h, map_w = 18, 13
         except Exception:
-            map_h, map_w = 18, 7
+            map_h, map_w = 18, 13
 
         map_flat_dim = map_channels * map_h * map_w  # 3*18*7 = 378
         actor_proprio_dim = num_actor_obs - map_flat_dim

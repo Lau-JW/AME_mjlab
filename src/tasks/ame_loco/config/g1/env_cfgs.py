@@ -9,6 +9,7 @@ Paper: AME-2 (arXiv:2601.08485)
 """
 
 import math
+import torch
 from dataclasses import replace
 
 import src.tasks.ame_loco.mdp.ame_rewards as rwd
@@ -58,10 +59,10 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         debug_vis=True,
     )
     # GT elevation map sensor (dense grid, teacher)
-    # 18×7 grid at 8cm, centered at (0.6, 0) — reduced from 36×14 for G1/memory
+    # 18×13 grid at 8cm, centered at (0.32, 0) — paper TRON1 biped config
     elev_map_sensor = create_elevation_map_sensor_cfg(
-        map_height=18, map_width=7, resolution=0.08,
-        center_x=0.6, center_y=0.0,
+        map_height=18, map_width=13, resolution=0.08,
+        center_x=0.32, center_y=0.0,
         frame_name="torso_link",
         sensor_name="elevation_map_scan",
     )
@@ -125,27 +126,40 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-1.5, n_max=1.5),
         ),
         "actions": ObservationTermCfg(func=envs_mdp.last_action),
-        # Elevation map — GT elevation map (3ch: xyz, 18x7 grid)
+        # Elevation map — GT elevation map (3ch: xyz, 18x13 grid, paper TRON1)
         "elevation_map": ObservationTermCfg(
             func=sample_gt_elevation_map,
             params={
-                "map_height": 18, "map_width": 7,
+                "map_height": 18, "map_width": 13,
                 "resolution": 0.08,
-                "center_x": 0.6, "center_y": 0.0,
+                "center_x": 0.32, "center_y": 0.0,
                 "sensor_name": "elevation_map_scan",
             },
         ),
     }
+    # Actor command: clip goal distance to max 2m (paper Sec III-B)
+    def _actor_command(env):
+        cmd = envs_mdp.generated_commands(env, "goal")
+        d_xy = torch.norm(cmd[:, :2], dim=-1)
+        scale = torch.clamp(2.0 / (d_xy + 1e-8), max=1.0)
+        cmd[:, 0] = cmd[:, 0] * scale
+        cmd[:, 1] = cmd[:, 1] * scale
+        return cmd
+
     def _body_contact(env):
         """Contact state of each link (Sec IV-B). Returns (B, N) binary flags."""
         try:
             sensor = env.scene["body_contact"]
-            return sensor.data.found.float()  # (B, N_contacts)
+            return sensor.data.found.float()
         except Exception:
             return torch.zeros(env.num_envs, 14, device=env.device)
 
+    # Replace actor command with clipped version
+    actor_terms_clipped = {**actor_terms}
+    actor_terms_clipped["command"] = ObservationTermCfg(func=_actor_command)
+
     critic_terms = {
-        **actor_terms,
+        **actor_terms,  # full command for critic
         "base_lin_vel": ObservationTermCfg(
             func=envs_mdp.builtin_sensor,
             params={"sensor_name": "robot/imu_lin_vel"},
@@ -155,7 +169,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
     observations = {
         "actor": ObservationGroupCfg(
-            terms=actor_terms,
+            terms=actor_terms_clipped,
             concatenate_terms=True,
             enable_corruption=True,
             history_length=1,
@@ -356,6 +370,18 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "feet_height_body": RewardTermCfg(
             func=rwd.feet_height_body, weight=1.0,
             params={"target_height": 0.1, "tanh_mult": 2.0},
+        ),
+        "link_contact_forces": RewardTermCfg(
+            func=rwd.link_contact_forces, weight=-0.00001,
+        ),
+        "link_acceleration": RewardTermCfg(
+            func=rwd.link_acceleration, weight=-0.001,
+        ),
+        "joint_velocity_limits": RewardTermCfg(
+            func=rwd.joint_velocity_limits, weight=-1.0,
+        ),
+        "joint_torque_limits": RewardTermCfg(
+            func=rwd.joint_torque_limits, weight=-1.0,
         ),
     }
 
