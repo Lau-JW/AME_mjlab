@@ -4,9 +4,9 @@ from pathlib import Path
 
 import mujoco
 
-from getup.AMP_mjlab.src import SRC_PATH
+from src import SRC_PATH
 # from mjlab.actuator import BuiltinPositionActuatorCfg
-from getup.AMP_mjlab.src.assets.robots.unitree_g1.unitree_actuators import *
+from src.assets.robots.unitree_g1.unitree_actuators import *
 from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.actuator import (
   ElectricActuator,

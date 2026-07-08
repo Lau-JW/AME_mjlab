@@ -20,6 +20,12 @@ from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 
 
 def main():
+    raise NotImplementedError(
+        "AME-2 student training is not implemented in this mjlab port yet. "
+        "It needs neural mapping, 4-channel uncertainty maps, LSIO/history, "
+        "teacher action distillation, representation loss, and the first-5k "
+        "surrogate-loss schedule before this entry point is valid."
+    )
     task_id = "Unitree-G1-AME-Student"
 
     env_cfg = load_env_cfg(task_id)

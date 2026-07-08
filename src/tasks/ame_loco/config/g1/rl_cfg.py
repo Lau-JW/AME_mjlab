@@ -18,6 +18,7 @@ class AmeRunnerCfg(RslRlOnPolicyRunnerCfg):
 def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
     """Teacher PPO config (Table VI)."""
     return AmeRunnerCfg(
+        use_moe_critic=True,
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",
@@ -46,7 +47,7 @@ def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
         logger="tensorboard",
         save_interval=50,
         num_steps_per_env=24,
-        max_iterations=80001,
+        max_iterations=80000,
     )
 
 
@@ -57,6 +58,7 @@ def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
     Uses action distillation + representation loss on top of PPO.
     """
     return AmeRunnerCfg(
+        use_moe_critic=True,
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",

@@ -21,7 +21,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from getup.AMP_mjlab.rsl_rl.utils import unpad_trajectories
+from rsl_rl.utils import unpad_trajectories
 
 
 class Memory(torch.nn.Module):

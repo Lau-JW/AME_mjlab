@@ -24,10 +24,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from getup.AMP_mjlab.rsl_rl.modules import ActorCritic
-from getup.AMP_mjlab.rsl_rl.modules.rnd import RandomNetworkDistillation
-from getup.AMP_mjlab.rsl_rl.storage import RolloutStorage
-from getup.AMP_mjlab.rsl_rl.utils import string_to_callable
+from rsl_rl.modules import ActorCritic
+from rsl_rl.modules.rnd import RandomNetworkDistillation
+from rsl_rl.storage import RolloutStorage
+from rsl_rl.utils import string_to_callable
 
 
 class PPO:

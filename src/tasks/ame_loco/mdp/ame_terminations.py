@@ -28,9 +28,6 @@ def bad_orientation_ame(
     - g_z > 0.0: robot flipped (gravity pointing up in base frame)
     """
     try:
-        # Read projected gravity from IMU
-        imu_quat = env.sensor_manager.get_sensor("robot/imu_ang_vel")
-        # Try to get gravity from the simulation, fallback to sensor
         grav = _get_projected_gravity(env)
         if grav is None:
             return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
@@ -50,13 +47,20 @@ def base_collision(
 ) -> torch.Tensor:
     """Terminate if base link contact force exceeds robot weight * factor."""
     try:
-        sensor = env.sensor_manager.get_sensor("self_collision")
-        contact_force = sensor.data.force  # (B, N_contacts)
-        max_force = contact_force.max(dim=-1)[0]  # (B,)
-        # Robot weight estimate
-        robot_mass = 35.0  # G1 mass ~35kg
+        sensor = env.scene["body_contact"]
+        force = sensor.data.force
+        if force is None:
+            return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
+        slots = getattr(sensor, "_slots", None)
+        pelvis_idx = 0
+        if slots is not None:
+            names = [slot.primary_name for slot in slots if slot.field_name == "force"]
+            if "pelvis" in names:
+                pelvis_idx = names.index("pelvis")
+        base_force = torch.norm(force[:, pelvis_idx], dim=-1)
+        robot_mass = 35.0
         weight = robot_mass * 9.81
-        return max_force > weight * force_threshold_factor
+        return base_force > weight * force_threshold_factor
     except (AttributeError, KeyError):
         return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
 

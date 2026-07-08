@@ -5,9 +5,12 @@ Paper: Section III-B, Section V
 - Student: 4-channel (x, y, z, u) with uncertainty
 """
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 import torch
 import math
+
+from mjlab.utils.lab_api.math import quat_apply_inverse
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -35,11 +38,8 @@ def sample_gt_elevation_map(
     Paper: ANYmal-D uses 36x14 at 8cm, centered at (0.6, 0.0) in base frame.
     G1 uses the same but can be adjusted.
     """
-    # Compute actual grid dimensions from pattern cfg (paper: 36x14 @ 8cm)
-    # GridPatternCfg uses arange(-size/2, +size/2 + res*0.5, res),
-    # so actual grid dim = floor(size/res) + 1
-    grid_h = int(map_height * resolution / resolution) + 1  # = map_height + 1
-    grid_w = int(map_width * resolution / resolution) + 1   # = map_width + 1
+    grid_h = map_height
+    grid_w = map_width
     N = grid_h * grid_w
 
     try:
@@ -53,8 +53,8 @@ def sample_gt_elevation_map(
     hit_pos = sensor.data.hit_pos_w  # (B, N, 3)
     base_pos = sensor.data.pos_w     # (B, 3)
 
-    # Convert world hit positions to base-relative frame
-    rel_pos = hit_pos - base_pos.unsqueeze(1)  # (B, N, 3)
+    # Convert world hit positions to the yaw-aligned sensor frame.
+    rel_pos = quat_apply_inverse(sensor.data.quat_w.unsqueeze(1), hit_pos - base_pos.unsqueeze(1))
 
     assert rel_pos.shape[1] == N, f"Expected {N} rays, got {rel_pos.shape[1]}"
 
@@ -69,15 +69,37 @@ def sample_gt_elevation_map(
     elevation_map = elevation_map.clone()
     elevation_map[:, 2:3, :, :][miss_mask] = -10.0  # sentinel for "no hit"
 
-    # Crop or pad to expected map_height x map_width if dimensions differ
-    if elevation_map.shape[2] != map_height or elevation_map.shape[3] != map_width:
-        dh = elevation_map.shape[2] - map_height
-        dw = elevation_map.shape[3] - map_width
-        dh1, dh2 = dh // 2, dh - dh // 2
-        dw1, dw2 = dw // 2, dw - dw // 2
-        elevation_map = elevation_map[:, :, dh1:elevation_map.shape[2]-dh2, dw1:elevation_map.shape[3]-dw2]
-
     return elevation_map
+
+
+@dataclass
+class OffsetGridPatternCfg:
+    size: tuple[float, float]
+    resolution: float
+    offset: tuple[float, float] = (0.0, 0.0)
+    direction: tuple[float, float, float] = (0.0, 0.0, -1.0)
+
+    def generate_rays(self, mj_model, device: str):
+        del mj_model
+        size_x, size_y = self.size
+        off_x, off_y = self.offset
+        res = self.resolution
+        x = torch.arange(
+            off_x - size_x / 2, off_x + size_x / 2 + res * 0.5,
+            res, device=device, dtype=torch.float32,
+        )
+        y = torch.arange(
+            off_y - size_y / 2, off_y + size_y / 2 + res * 0.5,
+            res, device=device, dtype=torch.float32,
+        )
+        grid_x, grid_y = torch.meshgrid(x, y, indexing="xy")
+        local_offsets = torch.zeros((grid_x.numel(), 3), device=device, dtype=torch.float32)
+        local_offsets[:, 0] = grid_x.flatten()
+        local_offsets[:, 1] = grid_y.flatten()
+        direction = torch.tensor(self.direction, device=device, dtype=torch.float32)
+        direction = direction / direction.norm()
+        local_directions = direction.unsqueeze(0).expand(grid_x.numel(), 3).clone()
+        return local_offsets, local_directions
 
 
 def create_elevation_map_sensor_cfg(
@@ -95,18 +117,19 @@ def create_elevation_map_sensor_cfg(
     Configures a grid of rays at the specified resolution around the
     robot base frame for terrain height measurement.
     """
-    from mjlab.sensor import RayCastSensorCfg, GridPatternCfg, ObjRef
+    from mjlab.sensor import RayCastSensorCfg, ObjRef
 
-    grid_size_x = map_width * resolution
-    grid_size_y = map_height * resolution
+    grid_size_x = (map_width - 1) * resolution
+    grid_size_y = (map_height - 1) * resolution
 
     return RayCastSensorCfg(
         name=sensor_name,
         frame=ObjRef(type="body", name=frame_name, entity="robot"),
         ray_alignment="yaw",
-        pattern=GridPatternCfg(
+        pattern=OffsetGridPatternCfg(
             size=(grid_size_x, grid_size_y),
             resolution=resolution,
+            offset=(center_x, center_y),
         ),
         max_distance=max_distance,
         debug_vis=True,

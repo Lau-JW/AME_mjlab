@@ -20,9 +20,9 @@ from __future__ import annotations
 
 import warnings
 
-from getup.AMP_mjlab.rsl_rl.modules import ActorCritic
-from getup.AMP_mjlab.rsl_rl.networks import Memory
-from getup.AMP_mjlab.rsl_rl.utils import resolve_nn_activation
+from rsl_rl.modules import ActorCritic
+from rsl_rl.networks import Memory
+from rsl_rl.utils import resolve_nn_activation
 
 
 class ActorCriticRecurrent(ActorCritic):

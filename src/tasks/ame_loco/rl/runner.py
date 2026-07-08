@@ -6,6 +6,7 @@
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import numpy as np
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 
@@ -120,9 +121,10 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         # ── Critic: wrap with SimpleMapEncoder (CNN downsample, no MHA) ──
         # We insert a CNN encoder before the MLP to reduce map dimensionality.
         orig_critic = policy.critic
+        use_moe = self.cfg.get("use_moe_critic", False)
 
         class CriticWithMapEncoder(nn.Module):
-            def __init__(self, proprio_dim, map_c, map_h, map_w, orig_mlp):
+            def __init__(self, proprio_dim, map_c, map_h, map_w, orig_mlp, use_moe_critic=False):
                 super().__init__()
                 self.proprio_dim = proprio_dim
                 self.map_c = map_c
@@ -133,9 +135,12 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                     output_dim=64,
                 )
                 new_in = proprio_dim + 64
-                new_first = nn.Linear(new_in, orig_mlp[0].out_features)
-                remaining = orig_mlp[1:]
-                self.mlp = nn.Sequential(new_first, *remaining)
+                if use_moe_critic:
+                    self.mlp = MoECritic(input_dim=new_in, num_experts=8, expert_hidden=256)
+                else:
+                    new_first = nn.Linear(new_in, orig_mlp[0].out_features)
+                    remaining = orig_mlp[1:]
+                    self.mlp = nn.Sequential(new_first, *remaining)
 
             def forward(self, obs):
                 proprio = obs[:, :self.proprio_dim]
@@ -146,25 +151,15 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                 return self.mlp(combined)
 
         policy.critic = CriticWithMapEncoder(
-            critic_proprio_dim, map_channels, map_h, map_w, orig_critic
+            critic_proprio_dim, map_channels, map_h, map_w, orig_critic, use_moe
         ).to(self.device)
         c_params = sum(p.numel() for p in policy.critic.parameters())
-        print(f"[AME] Critic with SimpleMapEncoder installed: {c_params} params")
+        critic_name = "MoE critic with SimpleMapEncoder" if use_moe else "Critic with SimpleMapEncoder"
+        print(f"[AME] {critic_name} installed: {c_params} params")
 
-        # ── Optionally replace critic with MoE ──
-        use_moe = self.cfg.get("use_moe_critic", False)
-        if not use_moe:
-            return
-        critic_dim = getattr(self.env, "num_critic_obs", self.env.num_obs)
-        num_experts = self.cfg.get("moe_num_experts", 8)
-        expert_hidden = self.cfg.get("moe_expert_hidden", 256)
-        moe = MoECritic(
-            input_dim=critic_dim, num_experts=num_experts,
-            expert_hidden=expert_hidden,
-        ).to(self.device)
-        if hasattr(policy, "critic"):
-            policy.critic = moe
-            print(f"[AME] MoE critic installed: {sum(p.numel() for p in moe.parameters())} params")
+        # Parent runner created the PPO optimizer before we replaced modules.
+        # Rebuild it so AME actor/critic parameters are actually trained.
+        self.alg.optimizer = optim.Adam(policy.parameters(), lr=self.alg.learning_rate)
 
     def save(self, path: str, infos=None) -> None:
         """Save checkpoint, skipping logger.save_model when logger isn't available."""

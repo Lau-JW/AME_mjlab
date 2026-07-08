@@ -21,11 +21,11 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from getup.AMP_mjlab.rsl_rl.modules.normalizer import (
+from rsl_rl.modules.normalizer import (
     EmpiricalDiscountedVariationNormalization,
     EmpiricalNormalization,
 )
-from getup.AMP_mjlab.rsl_rl.utils import resolve_nn_activation
+from rsl_rl.utils import resolve_nn_activation
 
 
 class RandomNetworkDistillation(nn.Module):

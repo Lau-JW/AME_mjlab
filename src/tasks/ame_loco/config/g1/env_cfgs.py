@@ -18,6 +18,12 @@ from src.tasks.ame_loco.mdp.map import (
     create_elevation_map_sensor_cfg,
     sample_gt_elevation_map,
 )
+from src.tasks.ame_loco.mdp.command import (
+    UniformGoalCommandCfg,
+    goal_command_actor,
+    goal_command_critic,
+    terrain_levels_goal,
+)
 
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.envs import mdp as envs_mdp
@@ -35,7 +41,6 @@ from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
 from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, ObjRef, RayCastSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
-from mjlab.tasks.velocity.mdp import UniformVelocityCommandCfg, terrain_levels_vel
 from mjlab.terrains import TerrainEntityCfg
 from src.tasks.ame_loco.mdp.terrain import SIMPLE_TERRAINS_CFG
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
@@ -95,8 +100,8 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             mode="subtree", pattern=body_names_str, entity="robot",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
-        fields=("found",),
-        reduce="none",
+        fields=("found", "force"),
+        reduce="netforce",
         num_slots=1,
     )
 
@@ -104,6 +109,10 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Observations (Fig 3 Right)
     ##
     actor_terms = {
+        "base_lin_vel": ObservationTermCfg(
+            func=envs_mdp.base_lin_vel,
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+        ),
         "base_ang_vel": ObservationTermCfg(
             func=envs_mdp.builtin_sensor,
             params={"sensor_name": "robot/imu_ang_vel"},
@@ -114,8 +123,12 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             noise=Unoise(n_min=-0.05, n_max=0.05),
         ),
         "command": ObservationTermCfg(
-            func=envs_mdp.generated_commands,
-            params={"command_name": "goal"},
+            func=goal_command_actor,
+            params={
+                "command_name": "goal",
+                "max_distance": 2.0,
+                "randomize_far_yaw": not play,
+            },
         ),
         "joint_pos": ObservationTermCfg(
             func=envs_mdp.joint_pos_rel,
@@ -137,39 +150,26 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
         ),
     }
-    # Actor command: clip goal distance to max 2m (paper Sec III-B)
-    def _actor_command(env):
-        cmd = envs_mdp.generated_commands(env, "goal")
-        d_xy = torch.norm(cmd[:, :2], dim=-1)
-        scale = torch.clamp(2.0 / (d_xy + 1e-8), max=1.0)
-        cmd[:, 0] = cmd[:, 0] * scale
-        cmd[:, 1] = cmd[:, 1] * scale
-        return cmd
-
     def _body_contact(env):
         """Contact state of each link (Sec IV-B). Returns (B, N) binary flags."""
         try:
             sensor = env.scene["body_contact"]
-            return sensor.data.found.float()
+            return (sensor.data.found > 0).float()
         except Exception:
             return torch.zeros(env.num_envs, 14, device=env.device)
 
-    # Replace actor command with clipped version
-    actor_terms_clipped = {**actor_terms}
-    actor_terms_clipped["command"] = ObservationTermCfg(func=_actor_command)
-
     critic_terms = {
-        **actor_terms,  # full command for critic
-        "base_lin_vel": ObservationTermCfg(
-            func=envs_mdp.builtin_sensor,
-            params={"sensor_name": "robot/imu_lin_vel"},
+        **actor_terms,
+        "command": ObservationTermCfg(
+            func=goal_command_critic,
+            params={"command_name": "goal"},
         ),
         "body_contact": ObservationTermCfg(func=_body_contact),
     }
 
     observations = {
         "actor": ObservationGroupCfg(
-            terms=actor_terms_clipped,
+            terms=actor_terms,
             concatenate_terms=True,
             enable_corruption=True,
             history_length=1,
@@ -198,17 +198,14 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     # Commands — Goal reaching (Sec III-A)
     ##
     commands: dict[str, CommandTermCfg] = {
-        "goal": UniformVelocityCommandCfg(
+        "goal": UniformGoalCommandCfg(
             entity_name="robot",
             resampling_time_range=(5.0, 10.0),
             rel_standing_envs=0.05,
-            heading_command=True,
-            heading_control_stiffness=0.5,
-            ranges=UniformVelocityCommandCfg.Ranges(
-                lin_vel_x=(-1.0, 3.0),
-                lin_vel_y=(-1.0, 1.0),
-                ang_vel_z=(-math.pi / 4, math.pi / 4),
-                heading=(-math.pi, math.pi),
+            ranges=UniformGoalCommandCfg.Ranges(
+                distance=(1.0, 5.0),
+                direction=(-math.pi, math.pi),
+                yaw=(-math.pi, math.pi),
             ),
         )
     }
@@ -294,12 +291,6 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "track_heading": RewardTermCfg(func=rwd.track_heading, weight=50.0),
         "move_to_goal": RewardTermCfg(func=rwd.move_to_goal, weight=5.0),
         "stand_at_goal": RewardTermCfg(func=rwd.stand_at_goal, weight=5.0),
-        "track_lin_vel_xy_yaw_frame_exp": RewardTermCfg(
-            func=rwd.track_lin_vel_xy_yaw_frame_exp, weight=1.0,
-        ),
-        "track_ang_vel_z_exp": RewardTermCfg(
-            func=rwd.track_ang_vel_z_exp, weight=0.5,
-        ),
         # Survival
         "is_alive": RewardTermCfg(func=rwd.is_alive, weight=0.15),
         # Early termination (Table I: -10/d_tau, fires only on bad_orientation/base_collision)
@@ -332,15 +323,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=rwd.base_height_l2, weight=-10.0,
             params={"target_height": 0.78},
         ),
-        "feet_gait": RewardTermCfg(
-            func=rwd.feet_gait, weight=0.5,
-            params={"period": 0.8, "offset": (0.0, 0.5), "threshold": 0.5},
-        ),
         "feet_slide": RewardTermCfg(func=rwd.feet_slide, weight=-0.2),
-        "foot_clearance_reward": RewardTermCfg(
-            func=rwd.foot_clearance_reward, weight=1.0,
-            params={"target_height": 0.1},
-        ),
         "undesired_contacts": RewardTermCfg(
             func=rwd.undesired_contacts, weight=-1.0,
         ),
@@ -348,28 +331,14 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "dof_torques_limits": RewardTermCfg(
             func=rwd.dof_torques_limits, weight=-0.01,
         ),
-        "feet_air_time": RewardTermCfg(
-            func=rwd.feet_air_time, weight=0.25,
-            params={"threshold": 0.6},
-        ),
-        "feet_air_time_variance": RewardTermCfg(
-            func=rwd.feet_air_time_variance, weight=-0.1,
-        ),
         "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-1.0),
         "feet_too_near": RewardTermCfg(
             func=rwd.feet_too_near, weight=-1.0,
             params={"threshold": 0.2},
         ),
-        "joint_coordination": RewardTermCfg(
-            func=rwd.joint_coordination, weight=-0.1,
-        ),
         "stand_still": RewardTermCfg(
             func=rwd.stand_still, weight=-0.1,
             params={"command_name": "goal", "threshold": 0.1},
-        ),
-        "feet_height_body": RewardTermCfg(
-            func=rwd.feet_height_body, weight=1.0,
-            params={"target_height": 0.1, "tanh_mult": 2.0},
         ),
         "link_contact_forces": RewardTermCfg(
             func=rwd.link_contact_forces, weight=-0.00001,
@@ -391,8 +360,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     terminations = {
         "time_out": TerminationTermCfg(func=envs_mdp.time_out, time_out=True),
         "bad_orientation": TerminationTermCfg(
-            func=envs_mdp.bad_orientation,
-            params={"limit_angle": 0.8},
+            func=term.bad_orientation_ame,
         ),
         "base_collision": TerminationTermCfg(
             func=term.base_collision,
@@ -405,7 +373,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ##
     curriculum = {
         "terrain_levels": CurriculumTermCfg(
-            func=terrain_levels_vel,
+            func=terrain_levels_goal,
             params={"command_name": "goal"},
         ),
     }
@@ -432,7 +400,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
                 terrain_generator=replace(SIMPLE_TERRAINS_CFG),
                 max_init_terrain_level=5,
             ),
-            num_envs=1 if play else 2048,
+            num_envs=1 if play else 4800,
             extent=2.0,
         ),
         observations=observations,

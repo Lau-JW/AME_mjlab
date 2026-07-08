@@ -73,17 +73,6 @@ cp AMP_mjlab/mjlab_patch/mjlab/managers/observation_manager.py \
   <conda_path>/envs/mjlab/lib/python3.11/site-packages/mjlab/managers/observation_manager.py
 ```
 
-### 6. 设置 PYTHONPATH
-
-```bash
-export PYTHONPATH=/home/ubuntu:$PYTHONPATH
-```
-
-建议加到 `.bashrc`：
-```bash
-echo 'export PYTHONPATH=/home/ubuntu:$PYTHONPATH' >> ~/.bashrc
-```
-
 ## 训练
 
 ### Teacher Policy（GT elevation map，80k iterations）
@@ -91,19 +80,30 @@ echo 'export PYTHONPATH=/home/ubuntu:$PYTHONPATH' >> ~/.bashrc
 ```bash
 conda activate mjlab
 cd AME_mjlab
-CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/home/ubuntu:$PYTHONPATH python scripts/train_teacher.py
+CUDA_VISIBLE_DEVICES=0 python scripts/train_teacher.py
 ```
 
 指定 GPU：
 ```bash
-CUDA_VISIBLE_DEVICES=3 PYTHONPATH=/home/ubuntu:$PYTHONPATH python scripts/train_teacher.py
+CUDA_VISIBLE_DEVICES=3 python scripts/train_teacher.py
 ```
 
-### Student Policy（neural mapping，40k iterations）— TODO
-
+快速 smoke test：
 ```bash
-CUDA_VISIBLE_DEVICES=0 PYTHONPATH=/home/ubuntu:$PYTHONPATH python scripts/train_student.py
+python scripts/train_teacher.py --device cpu --num-envs 1 --max-iterations 1 --log-root /tmp/ame-train-smoke
 ```
+
+可选参数：
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--device` | `cuda:0` | 训练设备 |
+| `--num-envs` | 配置默认值 | 覆盖并行环境数 |
+| `--max-iterations` | 配置默认值 | 覆盖训练迭代数 |
+| `--log-root` | `logs/rsl_rl` | 日志根目录 |
+
+### Student Policy（neural mapping，40k iterations）— 未实现
+
+当前 `scripts/train_student.py` 会直接报 `NotImplementedError`。Student 还需要 neural mapping、4 通道 uncertainty map、LSIO/history、teacher action distillation、representation loss，以及前 5k iteration 关闭 PPO surrogate loss 后才是有效的 AME-2 student 复现。
 
 ## 训练参数
 

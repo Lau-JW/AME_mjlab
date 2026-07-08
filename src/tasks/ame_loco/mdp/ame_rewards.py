@@ -45,7 +45,7 @@ def move_to_goal(env: "ManagerBasedRlEnv") -> torch.Tensor:
     near_goal = (d_xy < 0.5).float()
     try:
         asset = env.scene["robot"]
-        base_vel = asset.data.body_link_lin_vel_w[:, 0, :3]  # (B, 3)
+        base_vel = asset.data.root_link_lin_vel_w
         vel_xy = base_vel[:, :2]
         vel_norm = torch.norm(vel_xy, dim=-1)
         goal_dir = cmd[:, :2] / (d_xy.unsqueeze(-1) + 1e-8)
@@ -64,7 +64,7 @@ def stand_at_goal(env: "ManagerBasedRlEnv") -> torch.Tensor:
     near = ((d_xy < 0.5) & (d_yaw < 0.5)).float()
     try:
         contact_sensor = env.scene["feet_ground_contact"]
-        foot_contact = contact_sensor.data.found
+        foot_contact = contact_sensor.data.found > 0
         n_feet = foot_contact.shape[-1]
         d_foot = (n_feet - foot_contact.sum(dim=-1).float()) / n_feet
     except Exception:
@@ -75,7 +75,12 @@ def stand_at_goal(env: "ManagerBasedRlEnv") -> torch.Tensor:
         d_g = 1.0 - (-grav[:, 2])  # g_z should be ~ -1 when upright
     except Exception:
         d_g = torch.zeros(env.num_envs, device=env.device)
-    penalty = (d_foot + d_g + d_xy) / 3.0
+    try:
+        asset = env.scene["robot"]
+        dq = torch.mean(torch.abs(asset.data.joint_pos - asset.data.default_joint_pos), dim=-1)
+    except Exception:
+        dq = torch.zeros(env.num_envs, device=env.device)
+    penalty = (d_foot + d_g + dq + d_xy) / 4.0
     return near * torch.exp(-penalty)
 
 
@@ -85,8 +90,8 @@ def track_lin_vel_xy_yaw_frame_exp(env: "ManagerBasedRlEnv") -> torch.Tensor:
     target_x, target_y = cmd[:, 0], cmd[:, 1]
     try:
         asset = env.scene["robot"]
-        base_vel = asset.data.body_link_lin_vel_w[:, 0, :3]
-        base_quat = asset.data.body_link_quat_w[:, 0]  # (B, 4)
+        base_vel = asset.data.root_link_lin_vel_w
+        base_quat = asset.data.root_link_quat_w
         # Yaw from quat
         yaw = torch.atan2(
             2 * (base_quat[:, 0] * base_quat[:, 3] + base_quat[:, 1] * base_quat[:, 2]),
@@ -108,7 +113,7 @@ def track_ang_vel_z_exp(env: "ManagerBasedRlEnv") -> torch.Tensor:
     target_yaw_rate = cmd[:, 2]
     try:
         asset = env.scene["robot"]
-        ang_vel = asset.data.body_link_ang_vel_w[:, 0, :3]
+        ang_vel = asset.data.root_link_ang_vel_w
         error = (ang_vel[:, 2] - target_yaw_rate) ** 2
         return torch.exp(-error * 10.0)
     except Exception:
@@ -133,7 +138,7 @@ def lin_vel_z_l2(env: "ManagerBasedRlEnv") -> torch.Tensor:
     """Penalize vertical body velocity squared."""
     try:
         asset = env.scene["robot"]
-        vel = asset.data.body_link_lin_vel_w[:, 0, :3]
+        vel = asset.data.root_link_lin_vel_w
         return vel[:, 2] ** 2
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
@@ -143,7 +148,7 @@ def ang_vel_xy_l2(env: "ManagerBasedRlEnv") -> torch.Tensor:
     """Penalize roll/pitch angular velocity squared."""
     try:
         asset = env.scene["robot"]
-        ang_vel = asset.data.body_link_ang_vel_w[:, 0, :3]
+        ang_vel = asset.data.root_link_ang_vel_w
         return torch.sum(ang_vel[:, :2] ** 2, dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
@@ -246,7 +251,7 @@ def base_height_l2(env: "ManagerBasedRlEnv", target_height: float = 0.78) -> tor
     """Penalize deviation from target base height."""
     try:
         asset = env.scene["robot"]
-        height = asset.data.body_link_pos_w[:, 0, 2]
+        height = asset.data.root_link_pos_w[:, 2]
         return (height - target_height) ** 2
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
@@ -259,7 +264,7 @@ def feet_gait(env: "ManagerBasedRlEnv",
     """Reward foot contact following desired gait pattern."""
     try:
         sensor = env.scene["feet_ground_contact"]
-        foot_contact = sensor.data.found.float()
+        foot_contact = (sensor.data.found > 0).float()
         phase = _gait_phase(env, period)
         left_target = _gait_target(phase, offset[0], threshold)
         right_target = _gait_target(phase, offset[1], threshold)
@@ -274,9 +279,9 @@ def feet_slide(env: "ManagerBasedRlEnv") -> torch.Tensor:
     """Penalize foot sliding (foot velocity when in contact)."""
     try:
         sensor = env.scene["feet_ground_contact"]
-        contact = sensor.data.found.float()
+        contact = (sensor.data.found > 0).float()
         asset = env.scene["robot"]
-        foot_vel = asset.data.body_link_lin_vel_w[:, -2:, :2]  # last 2 bodies = feet
+        foot_vel = asset.data.body_link_lin_vel_w[:, _foot_body_ids(asset), :2]
         slide = torch.sum(foot_vel ** 2, dim=-1)  # (B, 2)
         return torch.mean(slide * contact, dim=-1)
     except Exception:
@@ -288,9 +293,9 @@ def foot_clearance_reward(env: "ManagerBasedRlEnv",
     """Reward feet clearance during swing phase."""
     try:
         asset = env.scene["robot"]
-        foot_height = asset.data.body_link_pos_w[:, -2:, 2]
+        foot_height = asset.data.body_link_pos_w[:, _foot_body_ids(asset), 2]
         sensor = env.scene["feet_ground_contact"]
-        contact = sensor.data.found.float()
+        contact = (sensor.data.found > 0).float()
         swing = 1.0 - contact
         error = torch.abs(foot_height - target_height)
         reward = torch.exp(-error * 10.0) * swing
@@ -303,7 +308,16 @@ def undesired_contacts(env: "ManagerBasedRlEnv") -> torch.Tensor:
     """Penalize any non-foot contact."""
     try:
         sensor = env.scene["body_contact"]
-        return sensor.data.found.any(dim=-1).float()
+        found = sensor.data.found > 0
+        names = _contact_primary_names(sensor)
+        if names is not None and len(names) == found.shape[1]:
+            mask = torch.tensor(
+                ["ankle_roll_link" not in n for n in names],
+                device=env.device,
+                dtype=torch.bool,
+            )
+            found = found[:, mask]
+        return found.any(dim=-1).float()
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 
@@ -327,8 +341,7 @@ def dof_torques_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
     try:
         asset = env.scene["robot"]
         torque = torch.abs(asset.data.actuator_force)
-        limits = torch.tensor([88.0, 88.0, 139.0, 139.0, 25.0, 25.0, 25.0, 5.0],
-                              device=env.device, dtype=torch.float32)
+        limits = _actuator_effort_limits(asset, env.device).unsqueeze(0)
         excess = torque - 0.8 * limits
         return torch.sum(torch.clamp(excess, min=0), dim=-1)
     except Exception:
@@ -382,7 +395,7 @@ def feet_too_near(env: "ManagerBasedRlEnv", threshold: float = 0.2) -> torch.Ten
     """Penalize feet being too close together."""
     try:
         asset = env.scene["robot"]
-        foot_pos = asset.data.body_link_pos_w[:, -2:, :]  # last 2 bodies = feet
+        foot_pos = asset.data.body_link_pos_w[:, _foot_body_ids(asset), :]
         distance = torch.norm(foot_pos[:, 0] - foot_pos[:, 1], dim=-1)
         return torch.clamp(threshold - distance, min=0)
     except Exception:
@@ -394,10 +407,10 @@ def feet_height_body(env: "ManagerBasedRlEnv", target_height: float = 0.1,
     """Reward swinging foot clearance."""
     try:
         asset = env.scene["robot"]
-        foot_height = asset.data.body_link_pos_w[:, -2:, 2]
+        foot_height = asset.data.body_link_pos_w[:, _foot_body_ids(asset), 2]
         sensor = env.scene["feet_ground_contact"]
-        contact = sensor.data.found.float()
-        foot_vel = asset.data.body_link_lin_vel_w[:, -2:, :2]
+        contact = (sensor.data.found > 0).float()
+        foot_vel = asset.data.body_link_lin_vel_w[:, _foot_body_ids(asset), :2]
         speed = torch.norm(foot_vel, dim=-1)
         # Reward when foot is in swing (not contact) and moving
         swing = 1.0 - contact
@@ -466,10 +479,8 @@ def joint_velocity_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
     try:
         asset = env.scene["robot"]
         vel = torch.abs(asset.data.joint_vel)
-        limits = torch.tensor([37.0, 32.0, 20.0, 37.0, 22.0],
-                              device=env.device, dtype=torch.float32)
-        # Map joint index to limit (approximate per-actuator-group)
-        excess = vel - 0.9 * limits.min()  # conservative estimate
+        limits = _joint_velocity_limits(asset, env.device).unsqueeze(0)
+        excess = vel - 0.9 * limits
         return torch.sum(torch.clamp(excess, min=0), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
@@ -482,9 +493,8 @@ def joint_torque_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
     try:
         asset = env.scene["robot"]
         torque = torch.abs(asset.data.actuator_force)
-        limits = torch.tensor([25.0, 88.0, 139.0, 25.0, 5.0],
-                              device=env.device, dtype=torch.float32)
-        excess = torque - 0.8 * limits.min()
+        limits = _actuator_effort_limits(asset, env.device).unsqueeze(0)
+        excess = torque - 0.8 * limits
         return torch.sum(torch.clamp(excess, min=0), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
@@ -537,3 +547,45 @@ def _gait_phase(env, period: float) -> torch.Tensor:
 def _gait_target(phase: torch.Tensor, offset: float, threshold: float) -> torch.Tensor:
     p = (phase - offset) % 1.0
     return (p < (1.0 - threshold)).float()
+
+
+def _foot_body_ids(asset) -> list[int]:
+    ids, _ = asset.find_bodies(("left_ankle_roll_link", "right_ankle_roll_link"), preserve_order=True)
+    return ids
+
+
+def _contact_primary_names(sensor) -> list[str] | None:
+    slots = getattr(sensor, "_slots", None)
+    if slots is None:
+        return None
+    return [slot.primary_name for slot in slots if slot.field_name == "found"]
+
+
+def _actuator_effort_limits(asset, device) -> torch.Tensor:
+    limits = []
+    for name in asset.actuator_names:
+        lname = name.lower()
+        if "hip_roll" in lname or "knee" in lname:
+            limits.append(139.0)
+        elif "hip_pitch" in lname or "hip_yaw" in lname or "waist_yaw" in lname:
+            limits.append(88.0)
+        elif "wrist_pitch" in lname or "wrist_yaw" in lname:
+            limits.append(5.0)
+        else:
+            limits.append(25.0)
+    return torch.tensor(limits, device=device, dtype=torch.float32)
+
+
+def _joint_velocity_limits(asset, device) -> torch.Tensor:
+    limits = []
+    for name in asset.joint_names:
+        lname = name.lower()
+        if "hip_roll" in lname or "knee" in lname:
+            limits.append(20.0)
+        elif "hip_pitch" in lname or "hip_yaw" in lname or "waist_yaw" in lname:
+            limits.append(32.0)
+        elif "wrist_pitch" in lname or "wrist_yaw" in lname:
+            limits.append(22.0)
+        else:
+            limits.append(37.0)
+    return torch.tensor(limits, device=device, dtype=torch.float32)
