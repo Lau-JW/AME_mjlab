@@ -202,9 +202,6 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ##
     # Events — Domain Randomization (Sec IV-D4, Appendix B)
     ##
-    geom_names = tuple(
-        f"{side}_foot{i}_collision" for side in ("left", "right") for i in range(1, 8)
-    )
     events = {
         "reset_base": EventTermCfg(
             func=envs_mdp.reset_root_state_uniform,
@@ -221,30 +218,38 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=envs_mdp.reset_joints_by_offset,
             mode="reset",
             params={
-                "position_range": (-0.0, 0.0),
-                "velocity_range": (-0.0, 0.0),
+                "position_range": (-0.1, 0.1),
+                "velocity_range": (-1.0, 1.0),
                 "asset_cfg": SceneEntityCfg("robot", joint_names=(".*",)),
             },
         ),
         "push_robot": EventTermCfg(
             func=envs_mdp.push_by_setting_velocity,
             mode="interval",
-            interval_range_s=(1.0, 3.0),
+            interval_range_s=(5.0, 10.0),
             params={
                 "velocity_range": {
-                    "x": (-0.5, 0.5), "y": (-0.5, 0.5), "z": (-0.4, 0.4),
-                    "roll": (-0.52, 0.52), "pitch": (-0.52, 0.52), "yaw": (-0.78, 0.78),
+                    "x": (-0.5, 0.5), "y": (-0.5, 0.5),
                 },
             },
         ),
-        "foot_friction": EventTermCfg(
+        "physics_material": EventTermCfg(
             mode="startup",
             func=dr.geom_friction,
             params={
-                "asset_cfg": SceneEntityCfg("robot", geom_names=geom_names),
+                "asset_cfg": SceneEntityCfg("robot", geom_names=(".*",)),
                 "operation": "abs",
                 "ranges": (0.3, 1.0),
                 "shared_random": True,
+            },
+        ),
+        "add_base_mass": EventTermCfg(
+            mode="startup",
+            func=dr.body_mass,
+            params={
+                "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
+                "ranges": (-1.0, 3.0),
+                "operation": "add",
             },
         ),
         "encoder_bias": EventTermCfg(
@@ -261,7 +266,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             params={
                 "asset_cfg": SceneEntityCfg("robot", body_names=("torso_link",)),
                 "operation": "add",
-                "ranges": {0: (-0.025, 0.025), 1: (-0.025, 0.025), 2: (-0.03, 0.03)},
+                "ranges": {0: (-0.05, 0.05), 1: (-0.05, 0.05), 2: (-0.01, 0.01)},
             },
         ),
     }
