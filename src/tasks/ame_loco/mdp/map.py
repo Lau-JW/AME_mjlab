@@ -53,8 +53,11 @@ def sample_gt_elevation_map(
     hit_pos = sensor.data.hit_pos_w  # (B, N, 3)
     base_pos = sensor.data.pos_w     # (B, 3)
 
-    # Convert world hit positions to the yaw-aligned sensor frame.
-    rel_pos = quat_apply_inverse(sensor.data.quat_w.unsqueeze(1), hit_pos - base_pos.unsqueeze(1))
+    # quat_apply_inverse flattens quat and vec independently, so the quaternion
+    # must be explicitly expanded to one quaternion per ray.
+    rel_pos_w = hit_pos - base_pos.unsqueeze(1)
+    quat_w = sensor.data.quat_w.unsqueeze(1).expand(-1, N, -1)
+    rel_pos = quat_apply_inverse(quat_w, rel_pos_w)
 
     assert rel_pos.shape[1] == N, f"Expected {N} rays, got {rel_pos.shape[1]}"
 
