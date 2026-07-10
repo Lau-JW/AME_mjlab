@@ -20,9 +20,9 @@ from src.tasks.ame_loco.mdp.map import (
 )
 from src.tasks.ame_loco.mdp.command import (
     UniformGoalCommandCfg,
+    TerrainLevelGoal,
     goal_command_actor,
     goal_command_critic,
-    terrain_levels_goal,
 )
 
 from mjlab.envs import ManagerBasedRlEnvCfg
@@ -200,7 +200,8 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     commands: dict[str, CommandTermCfg] = {
         "goal": UniformGoalCommandCfg(
             entity_name="robot",
-            resampling_time_range=(5.0, 10.0),
+            resampling_time_range=(20.0, 20.0),
+            resample_on_reset_only=True,
             rel_standing_envs=0.05,
             ranges=UniformGoalCommandCfg.Ranges(
                 distance=(1.0, 5.0),
@@ -373,8 +374,13 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     ##
     curriculum = {
         "terrain_levels": CurriculumTermCfg(
-            func=terrain_levels_goal,
-            params={"command_name": "goal"},
+            func=TerrainLevelGoal,
+            params={
+                "command_name": "goal",
+                "ema_alpha": 0.1,
+                "promotion_threshold": 0.5,
+                "demotion_distance": 4.0,
+            },
         ),
     }
 

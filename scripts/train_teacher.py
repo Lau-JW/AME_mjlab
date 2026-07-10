@@ -28,6 +28,7 @@ def run_train(
     device: str = "cuda:0",
     num_envs: int | None = None,
     max_iterations: int | None = None,
+    resume: Path | None = None,
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -46,18 +47,32 @@ def run_train(
 
     runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
     runner = runner_cls(env, asdict(rl_cfg), str(log_dir), device)
+    if resume is not None:
+        runner.load(str(resume), map_location=device)
 
     dump_yaml(log_dir / "params" / "env.yaml", asdict(env_cfg))
     dump_yaml(log_dir / "params" / "agent.yaml", asdict(rl_cfg))
+
+    start_iteration = runner.current_learning_iteration
+    remaining_iterations = max(0, rl_cfg.max_iterations - start_iteration)
 
     print(f"[AME] Teacher training started: {task_id}")
     print(f"[AME] Log dir: {log_dir}")
     print(f"[AME] Device: {device}")
     print(f"[AME] Num envs: {env_cfg.scene.num_envs}")
-    print(f"[AME] Max iterations: {rl_cfg.max_iterations}")
+    print(f"[AME] Target iteration: {rl_cfg.max_iterations}")
+    print(f"[AME] Start iteration: {start_iteration}")
+    print(f"[AME] Remaining iterations: {remaining_iterations}")
+    if resume is not None:
+        print(f"[AME] Resumed from: {resume}")
+    if remaining_iterations == 0:
+        print("[AME] Target iteration already reached; nothing to train.")
+        env.close()
+        return
+
     runner.learn(
-        num_learning_iterations=rl_cfg.max_iterations,
-        init_at_random_ep_len=True,
+        num_learning_iterations=remaining_iterations,
+        init_at_random_ep_len=resume is None,
     )
     env.close()
 
@@ -69,7 +84,15 @@ def main():
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument("--log-root", type=Path, default=Path("logs") / "rsl_rl")
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Checkpoint path. Terrain curriculum and EMA are restored when available.",
+    )
     args = parser.parse_args()
+    if args.resume is not None and not args.resume.is_file():
+        parser.error(f"Checkpoint does not exist: {args.resume}")
 
     log_dir = (
         args.log_root
@@ -83,6 +106,7 @@ def main():
         device=args.device,
         num_envs=args.num_envs,
         max_iterations=args.max_iterations,
+        resume=args.resume,
     )
 
 

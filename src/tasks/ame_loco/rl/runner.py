@@ -162,8 +162,25 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         self.alg.optimizer = optim.Adam(policy.parameters(), lr=self.alg.learning_rate)
 
     def save(self, path: str, infos=None) -> None:
-        """Save checkpoint, skipping logger.save_model when logger isn't available."""
-        env_state = {"common_step_counter": self.env.unwrapped.common_step_counter}
+        """Save model, optimizer, and environment curriculum state."""
+        env = self.env.unwrapped
+        env_state = {
+            "common_step_counter": env.common_step_counter,
+            "sim_step_counter": env._sim_step_counter,
+        }
+        terrain = env.scene.terrain
+        if terrain is not None and terrain.terrain_origins is not None:
+            env_state["terrain_levels"] = terrain.terrain_levels.detach().cpu()
+            env_state["terrain_types"] = terrain.terrain_types.detach().cpu()
+
+        curriculum_state = {}
+        for term_name in env.curriculum_manager.active_terms:
+            term = env.curriculum_manager.get_term_cfg(term_name).func
+            if hasattr(term, "state_dict"):
+                curriculum_state[term_name] = term.state_dict()
+        if curriculum_state:
+            env_state["curriculum"] = curriculum_state
+
         infos = {**(infos or {}), "env_state": env_state}
         saved_dict = self.alg.save()
         saved_dict["iter"] = self.current_learning_iteration
@@ -174,6 +191,74 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         if hasattr(self, "logger") and self.cfg.get("upload_model", False):
             self.logger.save_model(path, self.current_learning_iteration)
 
+    def load(
+        self,
+        path: str,
+        load_cfg: dict | None = None,
+        strict: bool = True,
+        map_location: str | None = None,
+    ) -> dict:
+        infos = super().load(
+            path,
+            load_cfg=load_cfg,
+            strict=strict,
+            map_location=map_location,
+        )
+        env_state = (infos or {}).get("env_state", {})
+        if not env_state:
+            return infos
+
+        env = self.env.unwrapped
+        if "sim_step_counter" in env_state:
+            env._sim_step_counter = int(env_state["sim_step_counter"])
+
+        curriculum_state = env_state.get("curriculum", {})
+        for term_name, state in curriculum_state.items():
+            if term_name not in env.curriculum_manager.active_terms:
+                continue
+            term = env.curriculum_manager.get_term_cfg(term_name).func
+            if hasattr(term, "load_state_dict"):
+                term.load_state_dict(state)
+
+        terrain = env.scene.terrain
+        levels = env_state.get("terrain_levels")
+        types = env_state.get("terrain_types")
+        terrain_restored = False
+        if (
+            terrain is not None
+            and terrain.terrain_origins is not None
+            and levels is not None
+            and types is not None
+        ):
+            if (
+                levels.shape == terrain.terrain_levels.shape
+                and types.shape == terrain.terrain_types.shape
+            ):
+                terrain.terrain_levels.copy_(levels.to(terrain.terrain_levels.device))
+                terrain.terrain_types.copy_(types.to(terrain.terrain_types.device))
+                terrain.env_origins[:] = terrain.terrain_origins[
+                    terrain.terrain_levels, terrain.terrain_types
+                ]
+                terrain_restored = True
+            else:
+                print(
+                    "[AME] Checkpoint terrain state skipped because num_envs changed: "
+                    f"checkpoint={tuple(levels.shape)}, "
+                    f"environment={tuple(terrain.terrain_levels.shape)}"
+                )
+
+        if terrain_restored:
+            for term_name in env.curriculum_manager.active_terms:
+                term = env.curriculum_manager.get_term_cfg(term_name).func
+                if hasattr(term, "suspend_next_update"):
+                    term.suspend_next_update()
+            self.env.reset()
+            print(
+                "[AME] Restored terrain curriculum: "
+                f"mean_level={terrain.terrain_levels.float().mean().item():.3f}"
+            )
+        return infos
+
     def _inject_terrain_curriculum(self, locs: dict):
         """Inject per-terrain curriculum levels into ep_infos so parent log prints them."""
         try:
@@ -182,6 +267,13 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
             col_types = terrain.terrain_types
             levels = terrain.terrain_levels.float()
             num_cols = terrain.terrain_origins.shape[1]
+            success_ema = None
+            if "terrain_levels" in env.curriculum_manager.active_terms:
+                curriculum_term = env.curriculum_manager.get_term_cfg(
+                    "terrain_levels"
+                ).func
+                if hasattr(curriculum_term, "success_ema"):
+                    success_ema = curriculum_term.success_ema.mean().item()
 
             # Build column→name mapping from terrain generator proportions (once)
             if not hasattr(self, '_terrain_col_names'):
@@ -210,6 +302,8 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                 for k, v in ep_info.items():
                     new_ep[k] = v
                     if k == "Curriculum/terrain_levels":
+                        if success_ema is not None:
+                            new_ep["Curriculum/success_ema"] = success_ema
                         for name in sorted(groups.keys()):
                             vals = groups[name]
                             if vals:

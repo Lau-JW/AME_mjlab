@@ -93,13 +93,21 @@ CUDA_VISIBLE_DEVICES=3 python scripts/train_teacher.py
 python scripts/train_teacher.py --device cpu --num-envs 1 --max-iterations 1 --log-root /tmp/ame-train-smoke
 ```
 
+从 checkpoint 恢复到总计 80000 iterations：
+```bash
+python scripts/train_teacher.py \
+  --resume logs/rsl_rl/g1_ame_teacher/<run>/model_15750.pt \
+  --max-iterations 80000
+```
+
 可选参数：
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--device` | `cuda:0` | 训练设备 |
 | `--num-envs` | 配置默认值 | 覆盖并行环境数 |
-| `--max-iterations` | 配置默认值 | 覆盖训练迭代数 |
+| `--max-iterations` | `80000` | 目标总迭代数；resume 时自动只训练剩余部分 |
 | `--log-root` | `logs/rsl_rl` | 日志根目录 |
+| `--resume` | 无 | 恢复网络、优化器、terrain level 和 curriculum EMA |
 
 ### Student Policy（neural mapping，40k iterations）— 未实现
 
@@ -153,10 +161,16 @@ AME_mjlab/
 | ankles | 40 | 2 | 25 N·m |
 | wrist_pitch, wrist_yaw | 40 | 1 | 5 N·m |
 
+课程日志中：
+
+- `Metrics/goal/goal_success`：episode 内曾到达目标位置的比例
+- `Metrics/goal/goal_pose_success`：同时到达目标位置和朝向的比例
+- `Metrics/goal/final_goal_distance`：episode 结束时的目标距离
+- `Curriculum/success_ema`：用于 terrain promotion 的成功率 EMA
+
 ## TODO
 
 - [ ] Student policy + neural mapping pipeline
-- [ ] Per-terrain-type curriculum metrics
 - [ ] ONNX 导出
 
 ## 致谢
