@@ -44,20 +44,15 @@ def bad_orientation_ame(
 def base_collision(
     env: "ManagerBasedRlEnv",
     force_threshold_factor: float = 1.0,
+    sensor_name: str = "base_contact",
 ) -> torch.Tensor:
-    """Terminate if base link contact force exceeds robot weight * factor."""
+    """Terminate if pelvis/torso contact force exceeds robot weight * factor."""
     try:
-        sensor = env.scene["body_contact"]
+        sensor = env.scene[sensor_name]
         force = sensor.data.force
         if force is None:
             return torch.zeros(env.num_envs, dtype=torch.bool, device=env.device)
-        slots = getattr(sensor, "_slots", None)
-        pelvis_idx = 0
-        if slots is not None:
-            names = [slot.primary_name for slot in slots if slot.field_name == "force"]
-            if "pelvis" in names:
-                pelvis_idx = names.index("pelvis")
-        base_force = torch.norm(force[:, pelvis_idx], dim=-1)
+        base_force = torch.norm(force, dim=-1).amax(dim=1)
         robot_mass = 35.0
         weight = robot_mass * 9.81
         return base_force > weight * force_threshold_factor

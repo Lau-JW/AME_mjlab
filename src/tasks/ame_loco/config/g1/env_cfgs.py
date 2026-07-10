@@ -85,8 +85,9 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         track_air_time=True,
     )
 
-    # Body contact sensor for critic (Sec IV-B: contact state of each link)
-    # Monitors all key robot bodies against terrain
+    # Body contact sensor for critic/rewards (Sec IV-B: contact state of each link).
+    # Use body-level matching, not subtree matching, so pelvis does not aggregate
+    # contacts from the whole robot.
     body_names_str = "|".join([
         "pelvis", "torso_link",
         "left_hip_roll_link", "left_knee_link", "left_ankle_roll_link",
@@ -97,7 +98,17 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     body_contact_cfg = ContactSensorCfg(
         name="body_contact",
         primary=ContactMatch(
-            mode="subtree", pattern=body_names_str, entity="robot",
+            mode="body", pattern=body_names_str, entity="robot",
+        ),
+        secondary=ContactMatch(mode="body", pattern="terrain"),
+        fields=("found", "force"),
+        reduce="netforce",
+        num_slots=1,
+    )
+    base_contact_cfg = ContactSensorCfg(
+        name="base_contact",
+        primary=ContactMatch(
+            mode="body", pattern=r"^(pelvis|torso_link)$", entity="robot",
         ),
         secondary=ContactMatch(mode="body", pattern="terrain"),
         fields=("found", "force"),
@@ -400,7 +411,13 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     return ManagerBasedRlEnvCfg(
         scene=SceneCfg(
             entities={"robot": get_g1_robot_cfg()},
-            sensors=(terrain_scan, elev_map_sensor, feet_ground_cfg, body_contact_cfg),
+            sensors=(
+                terrain_scan,
+                elev_map_sensor,
+                feet_ground_cfg,
+                body_contact_cfg,
+                base_contact_cfg,
+            ),
             terrain=TerrainEntityCfg(
                 terrain_type="generator",
                 terrain_generator=replace(SIMPLE_TERRAINS_CFG),
