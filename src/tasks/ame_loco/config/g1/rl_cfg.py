@@ -70,6 +70,7 @@ def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
             obs_normalization=True,
         ),
         algorithm=RslRlPpoAlgorithmCfg(
+            class_name="StudentPPO",
             value_loss_coef=1.0,
             use_clipped_value_loss=True,
             clip_param=0.2,
@@ -82,6 +83,10 @@ def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
             lam=0.95,
             desired_kl=0.01,
             max_grad_norm=1.0,
+            # Student-specific coefficients (passed to StudentPPO as kwargs)
+            distill_coef=1.0,
+            rep_coef=0.1,
+            disable_surrogate_iters=5000,
         ),
         experiment_name="g1_ame_student",
         logger="tensorboard",

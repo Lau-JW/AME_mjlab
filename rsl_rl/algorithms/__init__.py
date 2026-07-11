@@ -21,5 +21,6 @@
 from .amp_ppo import AMPPPO
 from .distillation import Distillation
 from .ppo import PPO
+from .student_ppo import StudentPPO
 
-__all__ = ["PPO", "Distillation", "AMPPPO"]
+__all__ = ["PPO", "Distillation", "AMPPPO", "StudentPPO"]

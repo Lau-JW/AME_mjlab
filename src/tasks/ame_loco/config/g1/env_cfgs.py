@@ -17,6 +17,7 @@ import src.tasks.ame_loco.mdp.ame_terminations as term
 from src.tasks.ame_loco.mdp.map import (
     create_elevation_map_sensor_cfg,
     sample_gt_elevation_map,
+    sample_student_elevation_map,
 )
 from src.tasks.ame_loco.mdp.command import (
     UniformGoalCommandCfg,
@@ -448,3 +449,163 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         decimation=4,
         episode_length_s=20.0,
     )
+
+
+def g1_ame_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Create G1 AME-2 environment config for student training.
+
+    Differences from teacher (Section III-B, Fig. 3 Right):
+    - No base linear velocity (odometry velocity is too noisy for policy).
+    - Proprioceptive observations (except command) are temporally stacked via
+      history_length=20 and encoded by LSIO.
+    - Elevation map is 4-channel (x, y, z, u) from the neural mapping pipeline.
+    """
+
+    # Reuse the teacher configuration as a base and override observations.
+    teacher_cfg = g1_ame_env_cfg(play=play)
+
+    # LSIO history length and single-frame proprio dimension for G1.
+    # Single-frame proprio (no base_lin_vel, no command):
+    #   ang_vel(3) + projected_gravity(3) + joint_pos(29) + joint_vel(29) + actions(29) = 93
+    proprio_history_len = 20
+    proprio_single_dim = 93
+    command_dim = 3
+
+    # Pull the GT elevation map sensor from the teacher scene (used as depth source).
+    elev_map_sensor = create_elevation_map_sensor_cfg(
+        map_height=18, map_width=13, resolution=0.08,
+        center_x=0.32, center_y=0.0,
+        frame_name="torso_link",
+        sensor_name="elevation_map_scan",
+    )
+
+    # Student actor observations: no base_lin_vel, 4-ch map, LSIO history on proprio.
+    actor_terms = {
+        "base_ang_vel": ObservationTermCfg(
+            func=envs_mdp.builtin_sensor,
+            params={"sensor_name": "robot/imu_ang_vel"},
+            noise=Unoise(n_min=-0.2, n_max=0.2),
+            history_length=proprio_history_len,
+        ),
+        "projected_gravity": ObservationTermCfg(
+            func=envs_mdp.projected_gravity,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+            history_length=proprio_history_len,
+        ),
+        "command": ObservationTermCfg(
+            func=goal_command_actor,
+            params={
+                "command_name": "goal",
+                "max_distance": 2.0,
+                "randomize_far_yaw": not play,
+            },
+            history_length=1,
+        ),
+        "joint_pos": ObservationTermCfg(
+            func=envs_mdp.joint_pos_rel,
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+            history_length=proprio_history_len,
+        ),
+        "joint_vel": ObservationTermCfg(
+            func=envs_mdp.joint_vel_rel,
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+            history_length=proprio_history_len,
+        ),
+        "actions": ObservationTermCfg(
+            func=envs_mdp.last_action,
+            history_length=proprio_history_len,
+        ),
+        # Student elevation map: 4 channels (x, y, z, u) from neural mapping.
+        "elevation_map": ObservationTermCfg(
+            func=sample_student_elevation_map,
+            params={
+                "map_height": 18, "map_width": 13,
+                "resolution": 0.08,
+                "center_x": 0.32, "center_y": 0.0,
+                "sensor_name": "elevation_map_scan",
+                "proprio_single_dim": proprio_single_dim,
+                "proprio_history_len": proprio_history_len,
+            },
+            history_length=1,
+        ),
+    }
+
+    # Critic uses the teacher's privileged actor observations (GT map + plain proprio
+    # including base linear velocity) so that the value function has access to the
+    # same privileged information as the teacher during student training.
+    critic_terms = {
+        "base_lin_vel": ObservationTermCfg(
+            func=envs_mdp.base_lin_vel,
+            noise=Unoise(n_min=-0.1, n_max=0.1),
+            history_length=1,
+        ),
+        "base_ang_vel": ObservationTermCfg(
+            func=envs_mdp.builtin_sensor,
+            params={"sensor_name": "robot/imu_ang_vel"},
+            noise=Unoise(n_min=-0.2, n_max=0.2),
+            history_length=1,
+        ),
+        "projected_gravity": ObservationTermCfg(
+            func=envs_mdp.projected_gravity,
+            noise=Unoise(n_min=-0.05, n_max=0.05),
+            history_length=1,
+        ),
+        "command": ObservationTermCfg(
+            func=goal_command_critic,
+            params={"command_name": "goal"},
+            history_length=1,
+        ),
+        "joint_pos": ObservationTermCfg(
+            func=envs_mdp.joint_pos_rel,
+            noise=Unoise(n_min=-0.01, n_max=0.01),
+            history_length=1,
+        ),
+        "joint_vel": ObservationTermCfg(
+            func=envs_mdp.joint_vel_rel,
+            noise=Unoise(n_min=-1.5, n_max=1.5),
+            history_length=1,
+        ),
+        "actions": ObservationTermCfg(func=envs_mdp.last_action, history_length=1),
+        # GT elevation map for teacher-style critic
+        "elevation_map": ObservationTermCfg(
+            func=sample_gt_elevation_map,
+            params={
+                "map_height": 18, "map_width": 13,
+                "resolution": 0.08,
+                "center_x": 0.32, "center_y": 0.0,
+                "sensor_name": "elevation_map_scan",
+                "map_channels": 3,
+            },
+            history_length=1,
+        ),
+    }
+
+    observations = {
+        "actor": ObservationGroupCfg(
+            terms=actor_terms,
+            concatenate_terms=True,
+            enable_corruption=True,
+            history_length=None,  # per-term history already configured
+            history_ordering="term",
+        ),
+        "critic": ObservationGroupCfg(
+            terms=critic_terms,
+            concatenate_terms=True,
+            enable_corruption=False,
+            history_length=None,
+            history_ordering="term",
+        ),
+    }
+
+    # Replace observations; keep the teacher scene/actions/rewards/etc.
+    teacher_cfg.observations = observations
+
+    # Make sure the GT elevation sensor is in the scene so the student mapping can
+    # synthesize depth clouds from it during simulation training.
+    scene_sensors = list(teacher_cfg.scene.sensors)
+    has_elev_sensor = any(getattr(s, "name", None) == "elevation_map_scan" for s in scene_sensors)
+    if not has_elev_sensor:
+        scene_sensors.append(elev_map_sensor)
+        teacher_cfg.scene = replace(teacher_cfg.scene, sensors=tuple(scene_sensors))
+
+    return teacher_cfg

@@ -12,7 +12,7 @@ from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 
 from rsl_rl.runners.on_policy_runner import _unpack_obs
 from src.tasks.ame_loco.rl.ame_encoder import (
-    ProprioEncoder, AME2Encoder, SimpleMapEncoder, MoECritic,
+    ProprioEncoder, LSIOProprioEncoder, AME2Encoder, SimpleMapEncoder, MoECritic,
 )
 
 
@@ -20,27 +20,34 @@ class AME2Actor(nn.Module):
     """AME-2 actor: proprio → encoder + map → AME2 → concat → MLP decoder.
 
     Wraps the full pipeline so it can replace ActorCritic.actor.
-    Input: observation tensor (B, 1608) — proprio(96) + elevation_map(1512)
-    Output: action mean (B, 29)
+    Input: observation tensor (B, proprio_dim + map_channels*H*W)
+    Output: action mean (B, num_actions)
     """
 
     def __init__(self, num_actions=29, proprio_dim=96,
                  map_channels=3, map_height=18, map_width=7,
                  proprio_hidden=128, encoder_proprio_dim=64,
                  local_feat_dim=64, global_feat_dim=64,
-                 decoder_hidden=(512, 256, 128)):
+                 decoder_hidden=(512, 256, 128),
+                 ProprioEncoderCls=ProprioEncoder,
+                 proprio_encoder_kwargs=None):
         super().__init__()
         self.proprio_dim = proprio_dim
         self.map_channels = map_channels
         self.map_height = map_height
         self.map_width = map_width
 
-        self.proprio_encoder = ProprioEncoder(
-            input_dim=proprio_dim, hidden_dim=proprio_hidden,
-            output_dim=encoder_proprio_dim,
-        )
+        proprio_encoder_kwargs = proprio_encoder_kwargs or {}
+        if ProprioEncoderCls is ProprioEncoder:
+            proprio_encoder_kwargs.setdefault("input_dim", proprio_dim)
+            proprio_encoder_kwargs.setdefault("hidden_dim", proprio_hidden)
+            proprio_encoder_kwargs.setdefault("output_dim", encoder_proprio_dim)
+        self.proprio_encoder = ProprioEncoderCls(**proprio_encoder_kwargs)
+        # AME-2 encoder always processes a 3-channel map (x,y,z). Student maps
+        # may have an extra uncertainty channel, which is dropped before CNN.
+        encoder_map_channels = 3 if map_channels >= 3 else map_channels
         self.map_encoder = AME2Encoder(
-            map_channels=map_channels, map_height=map_height, map_width=map_width,
+            map_channels=encoder_map_channels, map_height=map_height, map_width=map_width,
             local_feat_dim=local_feat_dim, global_feat_dim=global_feat_dim,
             proprio_dim=encoder_proprio_dim,
         )
@@ -54,13 +61,22 @@ class AME2Actor(nn.Module):
         self.decoder = nn.Sequential(*layers)
 
     def forward(self, obs):
+        actions, _ = self.forward_actor_with_map_embed(obs)
+        return actions
+
+    def forward_actor_with_map_embed(self, obs):
+        """Return action mean and the AME-2 map embedding (used for rep loss)."""
         proprio = obs[:, :self.proprio_dim]
         map_flat = obs[:, self.proprio_dim:]
         elev_map = map_flat.view(-1, self.map_channels, self.map_height, self.map_width)
+        # Student maps have an uncertainty channel; drop it before CNN encoding.
+        if self.map_channels == 4:
+            elev_map = elev_map[:, :3, :, :]
         prop_embed = self.proprio_encoder(proprio)
         map_embed = self.map_encoder(elev_map, prop_embed)
         combined = torch.cat([prop_embed, map_embed], dim=-1)
-        return self.decoder(combined)
+        actions = self.decoder(combined)
+        return actions, map_embed
 
 
 class AMEOnPolicyRunner(MjlabOnPolicyRunner):
@@ -85,34 +101,60 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         num_actor_obs = obs.shape[1]
         num_critic_obs = extras["observations"].get("critic", obs).shape[1]
 
-        # Infer proprio vs map split: map is always 3 channels × grid
-        # Grid dims from sensor: need to match the actual sensor output
-        # For now: use total actor obs minus flat map size
-        map_channels = 3
-        # Compute map grid dims from the elevation map observation
-        try:
-            elev_term = self.env.env.cfg.observations["actor"].terms.get("elevation_map", None)
-            if elev_term:
-                map_h = elev_term.params.get("map_height", 18)
-                map_w = elev_term.params.get("map_width", 13)
-            else:
-                map_h, map_w = 18, 13
-        except Exception:
-            map_h, map_w = 18, 13
+        def _read_elev_params(group_name):
+            try:
+                term = self.env.env.cfg.observations[group_name].terms.get("elevation_map", None)
+                if term:
+                    return (
+                        term.params.get("map_height", 18),
+                        term.params.get("map_width", 13),
+                        term.params.get("map_channels", 3),
+                        term.params,
+                    )
+            except Exception:
+                pass
+            return 18, 13, 3, {}
 
-        map_flat_dim = map_channels * map_h * map_w  # 3*18*7 = 378
-        actor_proprio_dim = num_actor_obs - map_flat_dim
-        critic_proprio_dim = num_critic_obs - map_flat_dim
+        actor_map_h, actor_map_w, actor_map_c, actor_elev_params = _read_elev_params("actor")
+        critic_map_h, critic_map_w, critic_map_c, critic_elev_params = _read_elev_params("critic")
+
+        actor_map_flat_dim = actor_map_c * actor_map_h * actor_map_w
+        critic_map_flat_dim = critic_map_c * critic_map_h * critic_map_w
+        actor_proprio_dim = num_actor_obs - actor_map_flat_dim
+        critic_proprio_dim = num_critic_obs - critic_map_flat_dim
 
         print(f"[AME] Obs dims: actor={num_actor_obs}, critic={num_critic_obs}, "
-              f"proprio={actor_proprio_dim}/{critic_proprio_dim}, map={map_h}x{map_w}x{map_channels}")
+              f"actor_proprio={actor_proprio_dim}, actor_map={actor_map_h}x{actor_map_w}x{actor_map_c}, "
+              f"critic_map={critic_map_h}x{critic_map_w}x{critic_map_c}")
+
+        # Determine whether this is the student configuration.
+        is_student = actor_map_c == 4
+        if is_student:
+            proprio_term_dims = actor_elev_params.get("proprio_term_dims", [3, 3, 29, 29, 29])
+            proprio_history_len = actor_elev_params.get("proprio_history_len", 20)
+            command_dim = actor_elev_params.get("command_dim", 3)
+            expected_proprio_dim = sum(proprio_term_dims) * proprio_history_len + command_dim
+            if actor_proprio_dim != expected_proprio_dim:
+                print(f"[AME] WARNING: student actor proprio dim mismatch: "
+                      f"observed={actor_proprio_dim}, expected={expected_proprio_dim}")
 
         # ── Actor ──
         num_actions = self.env.num_actions
-        ame_actor = AME2Actor(num_actions=num_actions,
-                              proprio_dim=actor_proprio_dim,
-                              map_channels=map_channels,
-                              map_height=map_h, map_width=map_w).to(self.device)
+        actor_kwargs = dict(
+            num_actions=num_actions,
+            proprio_dim=actor_proprio_dim,
+            map_channels=actor_map_c,
+            map_height=actor_map_h, map_width=actor_map_w,
+        )
+        if is_student:
+            actor_kwargs["ProprioEncoderCls"] = LSIOProprioEncoder
+            actor_kwargs["proprio_encoder_kwargs"] = {
+                "term_dims": proprio_term_dims,
+                "history_len": proprio_history_len,
+                "command_dim": command_dim,
+            }
+
+        ame_actor = AME2Actor(**actor_kwargs).to(self.device)
         policy.actor = ame_actor
         params = sum(p.numel() for p in ame_actor.parameters())
         print(f"[AME] AME-2 encoder actor installed: {params} params")
@@ -151,7 +193,7 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
                 return self.mlp(combined)
 
         policy.critic = CriticWithMapEncoder(
-            critic_proprio_dim, map_channels, map_h, map_w, orig_critic, use_moe
+            critic_proprio_dim, critic_map_c, critic_map_h, critic_map_w, orig_critic, use_moe
         ).to(self.device)
         c_params = sum(p.numel() for p in policy.critic.parameters())
         critic_name = "MoE critic with SimpleMapEncoder" if use_moe else "Critic with SimpleMapEncoder"

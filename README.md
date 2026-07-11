@@ -109,9 +109,38 @@ python scripts/train_teacher.py \
 | `--log-root` | `logs/rsl_rl` | 日志根目录 |
 | `--resume` | 无 | 恢复网络、优化器、terrain level 和 curriculum EMA |
 
-### Student Policy（neural mapping，40k iterations）— 未实现
+### Student Policy（neural mapping，40k iterations）
 
-当前 `scripts/train_student.py` 会直接报 `NotImplementedError`。Student 还需要 neural mapping、4 通道 uncertainty map、LSIO/history、teacher action distillation、representation loss，以及前 5k iteration 关闭 PPO surrogate loss 后才是有效的 AME-2 student 复现。
+Student 训练需要先把 Teacher 训练完成，并提供其 checkpoint。可选先用 `scripts/train_neural_mapping.py` 预训练 neural mapping 模型，否则 Student 训练时 mapping 模型随机初始化。
+
+```bash
+conda activate mjlab
+cd AME_mjlab
+
+# 1. (可选) 预训练 neural mapping 模型
+CUDA_VISIBLE_DEVICES=0 python scripts/train_neural_mapping.py \
+  --num-envs 64 --num-batches 1000
+
+# 2. 训练 Student
+CUDA_VISIBLE_DEVICES=0 python scripts/train_student.py \
+  --teacher logs/rsl_rl/g1_ame_teacher/<run>/model_80000.pt \
+  --mapping-checkpoint logs/neural_mapping/mapping_model_final.pt
+```
+
+Student 训练的主要改动：
+- 4 通道 `(x, y, z, u)` elevation map，来自 neural mapping pipeline（depth cloud → U-Net → global map fusion → ego query）。
+- LSIO 时序 proprio 编码：去掉 `base_lin_vel`，对过去 20 步 proprio 做 LSTM 编码，再拼接当前 command。
+- 训练损失：`PPO + action distillation + map-embedding representation loss`。
+- 前 5000 iterations 关闭 PPO surrogate loss，先对齐 Teacher。
+
+```
+Depth cloud ──→ LocalMapPredictor(U-Net) ──→ elevation + uncertainty
+                                          ↓
+Odometry pose ───────────────────────────→ global map fusion
+                                          ↓
+                                          → ego query (4ch map) ──→ Student Policy
+```
+
 
 ## 训练参数
 
@@ -170,8 +199,9 @@ AME_mjlab/
 
 ## TODO
 
-- [ ] Student policy + neural mapping pipeline
+- [x] Student policy + neural mapping pipeline
 - [ ] ONNX 导出
+- [ ] Real-world deployment adapter (ROS2 / sensor bridge / depth camera / odometry)
 
 ## 致谢
 

@@ -161,6 +161,70 @@ class ProprioEncoder(nn.Module):
         return self.mlp(obs)
 
 
+class LSIOProprioEncoder(nn.Module):
+    """Student proprioception encoder with Long-Short I/O (LSIO) history.
+
+    Paper Section III-A / Fig. 3 Right:
+    Stack proprioceptive observations (excluding base linear velocity and
+    commands) from the past K steps, encode them with a temporal network, and
+    concatenate the current command before a final MLP.
+
+    The input layout is term-major history produced by mjlab's observation
+    manager: [term0_t0..tK-1, term1_t0..tK-1, ..., command, elevation_map].
+    """
+
+    def __init__(
+        self,
+        term_dims: list[int],
+        history_len: int,
+        command_dim: int,
+        output_dim: int = 64,
+        lstm_hidden: int = 64,
+        num_lstm_layers: int = 2,
+    ):
+        super().__init__()
+        self.term_dims = list(term_dims)
+        self.history_len = history_len
+        self.command_dim = command_dim
+        self.proprio_total_dim = sum(term_dims)
+        self.history_total_dim = self.proprio_total_dim * history_len
+
+        self.lstm = nn.LSTM(
+            self.proprio_total_dim,
+            lstm_hidden,
+            num_layers=num_lstm_layers,
+            batch_first=True,
+        )
+        self.mlp = nn.Sequential(
+            nn.Linear(lstm_hidden + command_dim, 128),
+            nn.ELU(),
+            nn.Linear(128, output_dim),
+        )
+
+    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+        """Args: obs (B, history_total_dim + command_dim + map...).
+
+        Returns: proprio_embed (B, output_dim).
+        """
+        B = obs.shape[0]
+        hist = obs[:, :self.history_total_dim]
+        cmd = obs[:, self.history_total_dim:self.history_total_dim + self.command_dim]
+
+        # Reshape term-major history into (B, K, D) time-major.
+        term_tensors = []
+        start = 0
+        for d in self.term_dims:
+            end = start + d * self.history_len
+            term_hist = hist[:, start:end].view(B, self.history_len, d)
+            term_tensors.append(term_hist)
+            start = end
+        time_major = torch.cat(term_tensors, dim=-1)  # (B, K, sum(term_dims))
+
+        lstm_out, _ = self.lstm(time_major)
+        feat = lstm_out[:, -1]  # (B, lstm_hidden)
+        return self.mlp(torch.cat([feat, cmd], dim=-1))
+
+
 class MoECritic(nn.Module):
     """Mixture-of-Experts critic network."""
     def __init__(self, input_dim, num_experts=8, expert_hidden=256, output_dim=1):
