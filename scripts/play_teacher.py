@@ -53,6 +53,31 @@ def _run_headless(env: RslRlVecEnvWrapper, policy, steps: int) -> None:
     print(f"[AME] Mean resets: {done_count.mean().item():.3f}")
 
 
+def _apply_easy_play_overrides(env_cfg) -> None:
+    goal_cfg = env_cfg.commands["goal"]
+    goal_cfg.rel_standing_envs = 0.0
+    goal_cfg.ranges.distance = (1.0, 1.0)
+    goal_cfg.ranges.direction = (0.0, 0.0)
+    goal_cfg.ranges.yaw = (0.0, 0.0)
+
+    env_cfg.scene.terrain.max_init_terrain_level = 0
+    for event_name in ("physics_material", "add_base_mass", "encoder_bias", "base_com"):
+        env_cfg.events.pop(event_name, None)
+
+
+def _make_stochastic_policy(runner, device: str):
+    runner.eval_mode()
+    runner.alg.policy.to(device)
+
+    def _stochastic(obs):
+        if hasattr(obs, "keys"):
+            actor_key = "actor" if "actor" in obs.keys() else "policy"
+            obs = obs[actor_key]
+        return runner.alg.policy.act(obs)
+
+    return _stochastic
+
+
 def run_play(
     task_id: str,
     checkpoint: Path,
@@ -66,6 +91,8 @@ def run_play(
     video_height: int | None,
     video_width: int | None,
     enable_cuda_graph: bool,
+    stochastic: bool,
+    easy_play: bool,
 ) -> None:
     configure_torch_backends()
     if not enable_cuda_graph:
@@ -73,6 +100,8 @@ def run_play(
 
     env_cfg = load_env_cfg(task_id, play=True)
     rl_cfg = load_rl_cfg(task_id)
+    if easy_play:
+        _apply_easy_play_overrides(env_cfg)
     if num_envs is not None:
         env_cfg.scene.num_envs = num_envs
     if no_terminations:
@@ -104,13 +133,20 @@ def run_play(
         strict=True,
         map_location=device,
     )
-    policy = runner.get_inference_policy(device=device)
+    policy = (
+        _make_stochastic_policy(runner, device)
+        if stochastic
+        else runner.get_inference_policy(device=device)
+    )
 
     resolved_viewer = _select_viewer(viewer)
     print(f"[AME] Loaded checkpoint: {checkpoint}")
     print(f"[AME] Device: {device}")
     print(f"[AME] Num envs: {env.num_envs}")
     print(f"[AME] Viewer: {resolved_viewer}")
+    print(f"[AME] Policy: {'stochastic' if stochastic else 'deterministic'}")
+    if easy_play:
+        print("[AME] Easy play: flat level-0 terrain, 1m forward goal, no startup DR")
     if video and resolved_viewer != "headless":
         print("[AME] Video recording is active while viewer runs.")
 
@@ -150,6 +186,16 @@ def main() -> None:
         help="Opt into CUDA graph capture during play. Disabled by default for compatibility.",
     )
     parser.add_argument(
+        "--stochastic",
+        action="store_true",
+        help="Sample actions from the training distribution instead of using the mean policy.",
+    )
+    parser.add_argument(
+        "--easy-play",
+        action="store_true",
+        help="Use flat level-0 terrain, a 1m forward goal, and disable startup randomization.",
+    )
+    parser.add_argument(
         "--no-terminations",
         action="store_true",
         help="Disable terminations while viewing/debugging.",
@@ -172,6 +218,8 @@ def main() -> None:
         video_height=args.video_height,
         video_width=args.video_width,
         enable_cuda_graph=args.enable_cuda_graph,
+        stochastic=args.stochastic,
+        easy_play=args.easy_play,
     )
 
 
