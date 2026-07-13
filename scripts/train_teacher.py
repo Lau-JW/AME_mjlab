@@ -22,6 +22,15 @@ from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.os import dump_yaml
 
 
+def _disable_cuda_graphs_for_compat() -> None:
+    # Some mjlab/warp combinations disagree on where Warp exposes
+    # driver_version. Training does not require CUDA graph capture, so disable
+    # it by default and keep an opt-in flag for environments where it works.
+    from mjlab.sim.sim import Simulation
+
+    Simulation._should_use_cuda_graph = lambda self: False
+
+
 def run_train(
     task_id: str,
     log_dir: Path,
@@ -29,10 +38,13 @@ def run_train(
     num_envs: int | None = None,
     max_iterations: int | None = None,
     resume: Path | None = None,
+    enable_cuda_graph: bool = False,
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
     configure_torch_backends()
+    if not enable_cuda_graph:
+        _disable_cuda_graphs_for_compat()
 
     env_cfg = load_env_cfg(task_id)
     rl_cfg = load_rl_cfg(task_id)
@@ -85,6 +97,11 @@ def main():
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument("--log-root", type=Path, default=Path("logs") / "rsl_rl")
     parser.add_argument(
+        "--enable-cuda-graph",
+        action="store_true",
+        help="Opt into CUDA graph capture. Disabled by default for Warp compatibility.",
+    )
+    parser.add_argument(
         "--resume",
         type=Path,
         default=None,
@@ -107,6 +124,7 @@ def main():
         num_envs=args.num_envs,
         max_iterations=args.max_iterations,
         resume=args.resume,
+        enable_cuda_graph=args.enable_cuda_graph,
     )
 
 
