@@ -27,6 +27,15 @@ def _select_viewer(requested: str) -> str:
     return "native" if has_display else "viser"
 
 
+def _disable_cuda_graphs_for_compat() -> None:
+    # Some mjlab/warp combinations disagree on where Warp exposes
+    # driver_version. Play/video does not need CUDA graph capture, so disable it
+    # to keep checkpoint playback robust across local environments.
+    from mjlab.sim.sim import Simulation
+
+    Simulation._should_use_cuda_graph = lambda self: False
+
+
 def _run_headless(env: RslRlVecEnvWrapper, policy, steps: int) -> None:
     reward_sum = torch.zeros(env.num_envs, device=env.device)
     done_count = torch.zeros(env.num_envs, device=env.device)
@@ -56,8 +65,11 @@ def run_play(
     video_length: int,
     video_height: int | None,
     video_width: int | None,
+    enable_cuda_graph: bool,
 ) -> None:
     configure_torch_backends()
+    if not enable_cuda_graph:
+        _disable_cuda_graphs_for_compat()
 
     env_cfg = load_env_cfg(task_id, play=True)
     rl_cfg = load_rl_cfg(task_id)
@@ -133,6 +145,11 @@ def main() -> None:
     parser.add_argument("--video-height", type=int, default=None)
     parser.add_argument("--video-width", type=int, default=None)
     parser.add_argument(
+        "--enable-cuda-graph",
+        action="store_true",
+        help="Opt into CUDA graph capture during play. Disabled by default for compatibility.",
+    )
+    parser.add_argument(
         "--no-terminations",
         action="store_true",
         help="Disable terminations while viewing/debugging.",
@@ -154,6 +171,7 @@ def main() -> None:
         video_length=args.video_length,
         video_height=args.video_height,
         video_width=args.video_width,
+        enable_cuda_graph=args.enable_cuda_graph,
     )
 
 
