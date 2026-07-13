@@ -68,7 +68,7 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
 
     env: RslRlVecEnvWrapper
 
-    def __init__(self, env, cfg, log_dir, device="cuda:0", **kwargs):
+    def __init__(self, env, cfg, log_dir=None, device="cuda:0", **kwargs):
         super().__init__(env, cfg, log_dir, device, **kwargs)
         # Immediately replace actor after parent init completes
         if hasattr(self, "alg") and hasattr(self.alg, "policy"):

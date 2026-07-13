@@ -100,6 +100,19 @@ python scripts/train_teacher.py \
   --max-iterations 80000
 ```
 
+查看训练好的 teacher：
+```bash
+python scripts/play_teacher.py \
+  --checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_15750.pt
+```
+
+无头服务器先做 rollout 检查：
+```bash
+python scripts/play_teacher.py \
+  --checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_15750.pt \
+  --viewer headless --steps 1000
+```
+
 可选参数：
 | 参数 | 默认值 | 说明 |
 |---|---|---|
