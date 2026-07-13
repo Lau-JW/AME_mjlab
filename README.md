@@ -113,6 +113,13 @@ python scripts/play_teacher.py \
   --viewer headless --steps 1000
 ```
 
+无头录视频：
+```bash
+python scripts/play_teacher.py \
+  --checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_15750.pt \
+  --viewer headless --video --video-length 500
+```
+
 可选参数：
 | 参数 | 默认值 | 说明 |
 |---|---|---|

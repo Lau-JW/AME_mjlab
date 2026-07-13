@@ -16,6 +16,7 @@ from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 from mjlab.tasks.registry import load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.utils.torch import configure_torch_backends
+from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
 
 
@@ -51,6 +52,10 @@ def run_play(
     viewer: str,
     steps: int,
     no_terminations: bool,
+    video: bool,
+    video_length: int,
+    video_height: int | None,
+    video_width: int | None,
 ) -> None:
     configure_torch_backends()
 
@@ -60,8 +65,23 @@ def run_play(
         env_cfg.scene.num_envs = num_envs
     if no_terminations:
         env_cfg.terminations = {}
+    if video_height is not None:
+        env_cfg.viewer.height = video_height
+    if video_width is not None:
+        env_cfg.viewer.width = video_width
 
-    env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
+    render_mode = "rgb_array" if video else None
+    env = ManagerBasedRlEnv(cfg=env_cfg, device=device, render_mode=render_mode)
+    if video:
+        video_folder = checkpoint.parent / "videos" / "play"
+        env = VideoRecorder(
+            env,
+            video_folder=video_folder,
+            step_trigger=lambda step: step == 0,
+            video_length=video_length,
+            disable_logger=True,
+        )
+        print(f"[AME] Recording video to: {video_folder}")
     env = RslRlVecEnvWrapper(env, clip_actions=rl_cfg.clip_actions)
 
     runner_cls = load_runner_cls(task_id) or MjlabOnPolicyRunner
@@ -79,6 +99,8 @@ def run_play(
     print(f"[AME] Device: {device}")
     print(f"[AME] Num envs: {env.num_envs}")
     print(f"[AME] Viewer: {resolved_viewer}")
+    if video and resolved_viewer != "headless":
+        print("[AME] Video recording is active while viewer runs.")
 
     try:
         if resolved_viewer == "headless":
@@ -106,6 +128,10 @@ def main() -> None:
         help="auto uses native when DISPLAY exists, otherwise Viser web viewer.",
     )
     parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--video", action="store_true")
+    parser.add_argument("--video-length", type=int, default=200)
+    parser.add_argument("--video-height", type=int, default=None)
+    parser.add_argument("--video-width", type=int, default=None)
     parser.add_argument(
         "--no-terminations",
         action="store_true",
@@ -124,6 +150,10 @@ def main() -> None:
         viewer=args.viewer,
         steps=args.steps,
         no_terminations=args.no_terminations,
+        video=args.video,
+        video_length=args.video_length,
+        video_height=args.video_height,
+        video_width=args.video_width,
     )
 
 
