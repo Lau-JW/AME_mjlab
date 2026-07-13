@@ -39,7 +39,7 @@ from mjlab.managers.reward_manager import RewardTermCfg
 from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.managers.termination_manager import TerminationTermCfg
 from mjlab.scene import SceneCfg
-from mjlab.sensor import ContactMatch, ContactSensorCfg, GridPatternCfg, ObjRef, RayCastSensorCfg
+from mjlab.sensor import ContactMatch, ContactSensorCfg
 from mjlab.sim import MujocoCfg, SimulationCfg
 from mjlab.terrains import TerrainEntityCfg
 from src.tasks.ame_loco.mdp.terrain import SIMPLE_TERRAINS_CFG
@@ -53,16 +53,8 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     """Create G1 AME-2 environment config (teacher)."""
 
     ##
-    # Sensors — terrain scan + elevation map + foot contacts
+    # Sensors — elevation map + foot/body contacts
     ##
-    terrain_scan = RayCastSensorCfg(
-        name="terrain_scan",
-        frame=ObjRef(type="body", name="pelvis", entity="robot"),
-        ray_alignment="yaw",
-        pattern=GridPatternCfg(size=(1.6, 1.0), resolution=0.1),
-        max_distance=5.0,
-        debug_vis=True,
-    )
     # GT elevation map sensor (dense grid, teacher)
     # 18×13 grid at 8cm, centered at (0.32, 0) — paper TRON1 biped config
     elev_map_sensor = create_elevation_map_sensor_cfg(
@@ -70,6 +62,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         center_x=0.32, center_y=0.0,
         frame_name="torso_link",
         sensor_name="elevation_map_scan",
+        debug_vis=play,
     )
     feet_ground_cfg = ContactSensorCfg(
         name="feet_ground_contact",
@@ -412,7 +405,6 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         scene=SceneCfg(
             entities={"robot": get_g1_robot_cfg()},
             sensors=(
-                terrain_scan,
                 elev_map_sensor,
                 feet_ground_cfg,
                 body_contact_cfg,

@@ -114,6 +114,7 @@ def create_elevation_map_sensor_cfg(
     max_distance: float = 5.0,
     frame_name: str = "torso_link",
     sensor_name: str = "elevation_map_scan",
+    debug_vis: bool = False,
 ):
     """Create a dense raycast sensor config for GT elevation mapping.
 
@@ -135,5 +136,5 @@ def create_elevation_map_sensor_cfg(
             offset=(center_x, center_y),
         ),
         max_distance=max_distance,
-        debug_vis=True,
+        debug_vis=debug_vis,
     )
