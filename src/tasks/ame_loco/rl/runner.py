@@ -185,6 +185,11 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
         saved_dict = self.alg.save()
         saved_dict["iter"] = self.current_learning_iteration
         saved_dict["infos"] = infos
+        if self.empirical_normalization:
+            saved_dict["obs_norm_state_dict"] = self.obs_normalizer.state_dict()
+            saved_dict["privileged_obs_norm_state_dict"] = (
+                self.privileged_obs_normalizer.state_dict()
+            )
         torch.save(saved_dict, path)
         # MjlabOnPolicyRunner.save() calls self.logger.save_model, but our
         # rsl_rl fork doesn't set up self.logger. Skip if not available.
@@ -204,6 +209,19 @@ class AMEOnPolicyRunner(MjlabOnPolicyRunner):
             strict=strict,
             map_location=map_location,
         )
+        loaded_dict = torch.load(path, map_location=map_location, weights_only=False)
+        if self.empirical_normalization:
+            if "obs_norm_state_dict" in loaded_dict:
+                self.obs_normalizer.load_state_dict(loaded_dict["obs_norm_state_dict"])
+            else:
+                print(
+                    "[AME] WARNING: checkpoint has no obs normalizer state; "
+                    "play/resume may fail for policies trained with obs_normalization=True."
+                )
+            if "privileged_obs_norm_state_dict" in loaded_dict:
+                self.privileged_obs_normalizer.load_state_dict(
+                    loaded_dict["privileged_obs_norm_state_dict"]
+                )
         env_state = (infos or {}).get("env_state", {})
         if not env_state:
             return infos

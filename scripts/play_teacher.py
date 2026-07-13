@@ -68,11 +68,15 @@ def _apply_easy_play_overrides(env_cfg) -> None:
 def _make_stochastic_policy(runner, device: str):
     runner.eval_mode()
     runner.alg.policy.to(device)
+    if runner.cfg["empirical_normalization"]:
+        runner.obs_normalizer.to(device)
 
     def _stochastic(obs):
         if hasattr(obs, "keys"):
             actor_key = "actor" if "actor" in obs.keys() else "policy"
             obs = obs[actor_key]
+        if runner.cfg["empirical_normalization"]:
+            obs = runner.obs_normalizer(obs)
         return runner.alg.policy.act(obs)
 
     return _stochastic
