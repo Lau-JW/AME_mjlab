@@ -59,10 +59,29 @@ class UniformGoalCommand(CommandTerm):
     def compute(self, dt: float) -> None:
         if not self.cfg.resample_on_reset_only:
             super().compute(dt)
+            if self.cfg.resample_on_success:
+                self._resample_reached_goals()
             return
         self._update_metrics()
         self.time_left -= dt
         self._update_command()
+        if self.cfg.resample_on_success:
+            self._resample_reached_goals()
+
+    def _resample_reached_goals(self) -> None:
+        """Resample a new goal as soon as the current one is reached."""
+        distance, _ = self.goal_error()
+        reached = (
+            self.has_active_goal
+            & ~self.is_standing_env
+            & (distance < self.cfg.position_threshold)
+        )
+        env_ids = reached.nonzero().flatten()
+        if len(env_ids) == 0:
+            return
+        self.goal_reached[env_ids] = False
+        self.goal_pose_reached[env_ids] = False
+        self._resample(env_ids)
 
     def reset(self, env_ids: torch.Tensor | slice | None) -> dict[str, float]:
         assert isinstance(env_ids, torch.Tensor)
@@ -186,6 +205,8 @@ class UniformGoalCommandCfg(CommandTermCfg):
     entity_name: str
     rel_standing_envs: float = 0.05
     resample_on_reset_only: bool = True
+    resample_on_success: bool = False
+    """If True, sample a new goal immediately after reaching the current one."""
     position_threshold: float = 0.5
     heading_threshold: float = 0.5
 

@@ -65,6 +65,23 @@ def _apply_easy_play_overrides(env_cfg) -> None:
         env_cfg.events.pop(event_name, None)
 
 
+def _apply_goal_resample_overrides(
+    env_cfg,
+    goal_resample_s: float | None,
+    resample_on_success: bool,
+) -> None:
+    """Enable continuous goal sampling during play."""
+    goal_cfg = env_cfg.commands["goal"]
+    goal_cfg.rel_standing_envs = 0.0
+    if goal_resample_s is not None:
+        if goal_resample_s <= 0:
+            raise ValueError("--goal-resample must be > 0")
+        goal_cfg.resample_on_reset_only = False
+        goal_cfg.resampling_time_range = (goal_resample_s, goal_resample_s)
+    if resample_on_success:
+        goal_cfg.resample_on_success = True
+
+
 def _make_stochastic_policy(runner, device: str):
     runner.eval_mode()
     runner.alg.policy.to(device)
@@ -97,6 +114,8 @@ def run_play(
     enable_cuda_graph: bool,
     stochastic: bool,
     easy_play: bool,
+    goal_resample_s: float | None,
+    resample_on_success: bool,
 ) -> None:
     configure_torch_backends()
     if not enable_cuda_graph:
@@ -106,6 +125,8 @@ def run_play(
     rl_cfg = load_rl_cfg(task_id)
     if easy_play:
         _apply_easy_play_overrides(env_cfg)
+    if goal_resample_s is not None or resample_on_success:
+        _apply_goal_resample_overrides(env_cfg, goal_resample_s, resample_on_success)
     if num_envs is not None:
         env_cfg.scene.num_envs = num_envs
     if no_terminations:
@@ -151,6 +172,10 @@ def run_play(
     print(f"[AME] Policy: {'stochastic' if stochastic else 'deterministic'}")
     if easy_play:
         print("[AME] Easy play: flat level-0 terrain, 1m forward goal, no startup DR")
+    if goal_resample_s is not None:
+        print(f"[AME] Goal resample interval: {goal_resample_s:g}s")
+    if resample_on_success:
+        print("[AME] Resample goal on success enabled")
     if video and resolved_viewer != "headless":
         print("[AME] Video recording is active while viewer runs.")
 
@@ -200,6 +225,18 @@ def main() -> None:
         help="Use flat level-0 terrain, a 1m forward goal, and disable startup randomization.",
     )
     parser.add_argument(
+        "--goal-resample",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Resample a new goal every SECONDS during play (disables reset-only sampling).",
+    )
+    parser.add_argument(
+        "--resample-on-success",
+        action="store_true",
+        help="Immediately sample a new goal after reaching the current one.",
+    )
+    parser.add_argument(
         "--no-terminations",
         action="store_true",
         help="Disable terminations while viewing/debugging.",
@@ -224,6 +261,8 @@ def main() -> None:
         enable_cuda_graph=args.enable_cuda_graph,
         stochastic=args.stochastic,
         easy_play=args.easy_play,
+        goal_resample_s=args.goal_resample,
+        resample_on_success=args.resample_on_success,
     )
 
 
