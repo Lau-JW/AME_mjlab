@@ -49,6 +49,8 @@ class PPO:
         recon_loss_coef=0.01,
         entropy_coef=0.0,
         learning_rate=1e-3,
+        max_learning_rate=3e-4,
+        min_learning_rate=1e-5,
         max_grad_norm=1.0,
         use_clipped_value_loss=True,
         schedule="fixed",
@@ -131,6 +133,8 @@ class PPO:
         self.desired_kl = desired_kl
         self.schedule = schedule
         self.learning_rate = learning_rate
+        self.max_learning_rate = max_learning_rate
+        self.min_learning_rate = min_learning_rate
         self.normalize_advantage_per_mini_batch = normalize_advantage_per_mini_batch
 
     def init_storage(
@@ -310,9 +314,11 @@ class PPO:
                     #       then the learning rate should be the same across all GPUs.
                     if self.gpu_global_rank == 0:
                         if kl_mean > self.desired_kl * 2.0:
-                            self.learning_rate = max(1e-5, self.learning_rate / 1.5)
+                            self.learning_rate = max(self.min_learning_rate, self.learning_rate / 1.5)
                         elif kl_mean < self.desired_kl / 2.0 and kl_mean > 0.0:
-                            self.learning_rate = min(1e-2, self.learning_rate * 1.5)
+                            # Cap adaptive LR — previous hard cap 1e-2 caused collapse
+                            # when value loss spiked (AME teacher ~iter 9840).
+                            self.learning_rate = min(self.max_learning_rate, self.learning_rate * 1.5)
 
                     # Update the learning rate for all GPUs
                     if self.is_multi_gpu:

@@ -39,6 +39,7 @@ def run_train(
     max_iterations: int | None = None,
     resume: Path | None = None,
     enable_cuda_graph: bool = False,
+    learning_rate: float | None = None,
 ):
     os.environ.setdefault("MUJOCO_GL", "egl")
 
@@ -53,6 +54,8 @@ def run_train(
         env_cfg.scene.num_envs = num_envs
     if max_iterations is not None:
         rl_cfg.max_iterations = max_iterations
+    if learning_rate is not None:
+        rl_cfg.algorithm.learning_rate = learning_rate
 
     env = ManagerBasedRlEnv(cfg=env_cfg, device=device)
     env = RslRlVecEnvWrapper(env, clip_actions=rl_cfg.clip_actions)
@@ -61,6 +64,13 @@ def run_train(
     runner = runner_cls(env, asdict(rl_cfg), str(log_dir), device)
     if resume is not None:
         runner.load(str(resume), map_location=device)
+        # Reset LR after resume so adaptive schedule cannot inherit a bad state,
+        # and so we start from the (now lower) configured learning rate.
+        lr = float(rl_cfg.algorithm.learning_rate)
+        runner.alg.learning_rate = lr
+        for param_group in runner.alg.optimizer.param_groups:
+            param_group["lr"] = lr
+        print(f"[AME] Reset optimizer LR after resume -> {lr:g}")
 
     dump_yaml(log_dir / "params" / "env.yaml", asdict(env_cfg))
     dump_yaml(log_dir / "params" / "agent.yaml", asdict(rl_cfg))
@@ -75,6 +85,8 @@ def run_train(
     print(f"[AME] Target iteration: {rl_cfg.max_iterations}")
     print(f"[AME] Start iteration: {start_iteration}")
     print(f"[AME] Remaining iterations: {remaining_iterations}")
+    print(f"[AME] Learning rate: {rl_cfg.algorithm.learning_rate:g}")
+    print(f"[AME] Adaptive LR cap: {getattr(runner.alg, 'max_learning_rate', 'n/a')}")
     if resume is not None:
         print(f"[AME] Resumed from: {resume}")
     if remaining_iterations == 0:
@@ -95,6 +107,8 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num-envs", type=int, default=None)
     parser.add_argument("--max-iterations", type=int, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None,
+                        help="Override PPO learning rate (default from rl_cfg).")
     parser.add_argument("--log-root", type=Path, default=Path("logs") / "rsl_rl")
     parser.add_argument(
         "--enable-cuda-graph",
@@ -125,6 +139,7 @@ def main():
         max_iterations=args.max_iterations,
         resume=args.resume,
         enable_cuda_graph=args.enable_cuda_graph,
+        learning_rate=args.learning_rate,
     )
 
 
