@@ -223,7 +223,7 @@ def joint_deviation_waist(env: "ManagerBasedRlEnv") -> torch.Tensor:
 
 
 def joint_deviation_legs(env: "ManagerBasedRlEnv") -> torch.Tensor:
-    """Penalize leg joint deviation from default pose."""
+    """Penalize leg joint deviation from default pose (hip/knee/ankle)."""
     try:
         asset = env.scene["robot"]
         jpos = asset.data.joint_pos
@@ -233,6 +233,24 @@ def joint_deviation_legs(env: "ManagerBasedRlEnv") -> torch.Tensor:
         if not idx:
             return torch.zeros(env.num_envs, device=env.device)
         return torch.mean(torch.abs(jpos[:, idx]), dim=-1)
+    except Exception:
+        return torch.zeros(env.num_envs, device=env.device)
+
+
+def joint_deviation_hip(env: "ManagerBasedRlEnv") -> torch.Tensor:
+    """Penalize only hip yaw/roll deviation (do not constrain pitch/knee/ankle)."""
+    try:
+        asset = env.scene["robot"]
+        jpos = asset.data.joint_pos
+        names = asset.joint_names
+        idx = [
+            i for i, n in enumerate(names)
+            if ("hip_yaw" in n.lower() or "hip_roll" in n.lower())
+        ]
+        if not idx:
+            return torch.zeros(env.num_envs, device=env.device)
+        default = asset.data.default_joint_pos
+        return torch.mean(torch.abs(jpos[:, idx] - default[:, idx]), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 
@@ -353,26 +371,50 @@ def dof_torques_limits(env: "ManagerBasedRlEnv") -> torch.Tensor:
 # ──────────────────────────────────────────────
 
 
-def feet_air_time(env: "ManagerBasedRlEnv", threshold: float = 0.6) -> torch.Tensor:
-    """Reward sustained foot air time."""
+def feet_air_time(
+    env: "ManagerBasedRlEnv",
+    threshold: float = 0.6,
+    command_name: str = "goal",
+    min_goal_distance: float = 0.5,
+) -> torch.Tensor:
+    """Reward single-stance stepping while far from the goal.
+
+    Inspired by Isaac Lab ``feet_air_time_positive_biped``: encourage one foot in
+    air / one in contact, gated so near-goal standing is not rewarded for stepping.
+    """
     try:
         sensor = env.scene["feet_ground_contact"]
-        air_time = sensor.data.current_air_time  # (B, n_feet)
+        air_time = sensor.data.current_air_time
+        contact_time = getattr(sensor.data, "current_contact_time", None)
         if air_time is None:
             return torch.zeros(env.num_envs, device=env.device)
-        reward = torch.clamp(air_time - threshold, max=0.5)
-        return torch.sum(reward, dim=-1)
+
+        if contact_time is not None:
+            in_contact = contact_time > 0.0
+            in_mode_time = torch.where(in_contact, contact_time, air_time)
+            single_stance = torch.sum(in_contact.int(), dim=1) == 1
+            reward = torch.min(
+                torch.where(single_stance.unsqueeze(-1), in_mode_time, 0.0),
+                dim=1,
+            )[0]
+            reward = torch.clamp(reward, max=threshold)
+        else:
+            reward = torch.sum(torch.clamp(air_time - threshold, min=0.0, max=0.5), dim=-1)
+
+        cmd = env.command_manager.get_command(command_name)
+        d_xy = torch.norm(cmd[:, :2], dim=-1)
+        return reward * (d_xy > min_goal_distance).float()
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 
 
 def feet_air_time_variance(env: "ManagerBasedRlEnv") -> torch.Tensor:
-    """Penalize variance in foot air/contact time."""
+    """Penalize variance in foot air/contact time (asymmetric gait)."""
     try:
         sensor = env.scene["feet_ground_contact"]
         air_time = sensor.data.current_air_time
         if air_time is not None:
-            at = torch.clamp(air_time, max=0.5)
+            at = torch.clamp(air_time, min=0.0, max=0.5)
             return torch.var(at, dim=-1)
     except Exception:
         pass

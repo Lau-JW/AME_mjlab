@@ -318,14 +318,15 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "joint_deviation_waist": RewardTermCfg(
             func=rwd.joint_deviation_waist, weight=-1.0,
         ),
-        "joint_deviation_legs": RewardTermCfg(
-            func=rwd.joint_deviation_legs, weight=-1.0,
+        # Only constrain hip yaw/roll; do not punish hip_pitch/knee/ankle swing.
+        "joint_deviation_hip": RewardTermCfg(
+            func=rwd.joint_deviation_hip, weight=-0.1,
         ),
         "flat_orientation_l2": RewardTermCfg(
-            func=rwd.flat_orientation_l2, weight=-5.0,
+            func=rwd.flat_orientation_l2, weight=-2.0,
         ),
         "base_height_l2": RewardTermCfg(
-            func=rwd.base_height_l2, weight=-10.0,
+            func=rwd.base_height_l2, weight=-3.0,
             params={"target_height": 0.78},
         ),
         "feet_slide": RewardTermCfg(func=rwd.feet_slide, weight=-0.2),
@@ -336,10 +337,33 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "dof_torques_limits": RewardTermCfg(
             func=rwd.dof_torques_limits, weight=-0.01,
         ),
-        "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-1.0),
+        "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-2.0),
         "feet_too_near": RewardTermCfg(
             func=rwd.feet_too_near, weight=-1.0,
             params={"threshold": 0.2},
+        ),
+        # Gait shaping (from AME_Locomotion): encourage stepping while far from goal.
+        "feet_air_time": RewardTermCfg(
+            func=rwd.feet_air_time, weight=0.25,
+            params={
+                "threshold": 0.6,
+                "command_name": "goal",
+                "min_goal_distance": 0.5,
+            },
+        ),
+        "feet_air_time_variance": RewardTermCfg(
+            func=rwd.feet_air_time_variance, weight=-0.7,
+        ),
+        "joint_coordination": RewardTermCfg(
+            func=rwd.joint_coordination, weight=-0.2,
+        ),
+        "feet_gait": RewardTermCfg(
+            func=rwd.feet_gait, weight=0.5,
+            params={"period": 0.8, "offset": (0.0, 0.5), "threshold": 0.5},
+        ),
+        "foot_clearance": RewardTermCfg(
+            func=rwd.foot_clearance_reward, weight=0.5,
+            params={"target_height": 0.1},
         ),
         "stand_still": RewardTermCfg(
             func=rwd.stand_still, weight=-0.1,
