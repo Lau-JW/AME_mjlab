@@ -25,8 +25,16 @@ SIMPLE_TERRAINS_CFG = TerrainGeneratorCfg(
     color_scheme=ROUGH_TERRAINS_CFG.color_scheme,
     sub_terrains={
         "flat": replace(_full_sub["flat"], proportion=1/3),
-        "pyramid_stairs": replace(_full_sub["pyramid_stairs"], proportion=1/3),
-        "pyramid_stairs_inv": replace(_full_sub["pyramid_stairs_inv"], proportion=1/3),
+        "pyramid_stairs": replace(
+            _full_sub["pyramid_stairs"],
+            proportion=1/3,
+            step_height_range=(0.1, 0.2),
+        ),
+        "pyramid_stairs_inv": replace(
+            _full_sub["pyramid_stairs_inv"],
+            proportion=1/3,
+            step_height_range=(0.1, 0.2),
+        ),
     },
     difficulty_range=(0.0, 1.0),
     add_lights=ROUGH_TERRAINS_CFG.add_lights,
