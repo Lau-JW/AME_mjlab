@@ -1,13 +1,9 @@
-"""Train AME-2 student policy (Phase-1).
+"""Train AME-2 student policy with neural mapping (paper Sec IV-C / V).
 
-Paper Sec IV-C / IV-E1:
-  - Online student rollouts with 4ch map (GT xyz + heuristic uncertainty)
-  - LSIO proprio history (20 steps, no base lin-vel)
-  - PPO + action distillation + map-embedding representation loss
-  - PPO surrogate disabled for the first 5000 iterations
-
-Full neural mapping pipeline is still TODO; this stage unlocks the control-side
-student training loop against a frozen teacher checkpoint.
+- Depth cloud → local grid → gated U-Net → global WTA fusion → 4ch egocentric map
+- LSIO proprio history (20 steps, no base lin-vel)
+- PPO + action distillation + map-embedding representation loss
+- PPO surrogate + entropy disabled for the first 5000 iterations
 """
 
 from __future__ import annotations

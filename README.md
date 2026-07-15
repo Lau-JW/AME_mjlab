@@ -129,13 +129,19 @@ python scripts/play_teacher.py \
 | `--log-root` | `logs/rsl_rl` | 日志根目录 |
 | `--resume` | 无 | 恢复网络、优化器、terrain level 和 curriculum EMA |
 
-### Student Policy（Phase-1，40k iterations）
+### Student Policy（AME-2 neural mapping，40k iterations）
 
-在线蒸馏 + RL（论文设定）：前 5k iter 关闭 PPO surrogate，同时开 action distillation（log 里 `recon`）与 map embedding alignment（`vq`）。
-
-当前 Phase-1 用 **GT xyz + 启发式 uncertainty** 作为 4 通道 map（neural mapper 后续再接），LSIO 本体感觉 20 步历史、无 base lin-vel。
+对齐论文 Sec V：
+1. 先训 elevation U-Net mapper（β-NLL）
+2. Student 在线：depth cloud → 局部格网 → U-Net(μ,σ) → 全局 WTA 融合 → 查询 4ch 给 policy
+3. 在线蒸馏 + RL（前 5k 关 surrogate / entropy）
 
 ```bash
+# 1) train mapper (~minutes)
+CUDA_VISIBLE_DEVICES=5 python scripts/train_mapper.py \
+  --out logs/mappers/g1_elevation_unet.pt --steps 5000
+
+# 2) train student
 CUDA_VISIBLE_DEVICES=7 python scripts/train_student.py \
   --teacher-checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_XXXXX.pt \
   --num-envs 2048

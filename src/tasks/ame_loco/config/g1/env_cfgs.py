@@ -19,6 +19,10 @@ from src.tasks.ame_loco.mdp.map import (
     sample_gt_elevation_map,
     sample_student_elevation_map,
 )
+from src.tasks.ame_loco.mdp.neural_mapping import (
+    create_depth_cloud_sensor_cfg,
+    sample_neural_elevation_map,
+)
 from src.tasks.ame_loco.mdp.command import (
     UniformGoalCommandCfg,
     TerrainLevelGoal,
@@ -468,13 +472,24 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
 
 
 def g1_ame_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
-    """Student env: no base lin-vel, 20-step proprio history, 4ch map.
+    """Student env aligned with AME-2: LSIO proprio + neural mapping 4ch map.
 
-    Critic keeps privileged single-frame GT 3ch map + lin-vel for value and
-    online teacher distillation (Phase-1; neural mapper comes later).
+    Actor map comes from depth-cloud → U-Net → global WTA fusion (paper Sec V).
+    Critic keeps privileged GT 3ch map + lin-vel for value / distill targets.
     """
     cfg = g1_ame_env_cfg(play=play)
     hist = 20
+
+    # Add forward depth-cloud sensor (pinhole raycast ≈ depth camera).
+    depth_sensor = create_depth_cloud_sensor_cfg(
+        width=64, height=48, fovy=70.0,
+        frame_name="torso_link",
+        sensor_name="depth_cloud",
+        debug_vis=play,
+    )
+    sensors = list(cfg.scene.sensors)
+    sensors.append(depth_sensor)
+    cfg.scene = replace(cfg.scene, sensors=tuple(sensors))
 
     def _hist(term: ObservationTermCfg) -> ObservationTermCfg:
         return replace(term, history_length=hist, flatten_history_dim=True)
@@ -490,17 +505,9 @@ def g1_ame_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             history_length=0,
             flatten_history_dim=True,
         ),
-        # history_length=1 so map is flattened to 1D like other terms (mjlab concat).
         "elevation_map": ObservationTermCfg(
-            func=sample_student_elevation_map,
-            params={
-                "map_height": 18,
-                "map_width": 13,
-                "resolution": 0.08,
-                "center_x": 0.32,
-                "center_y": 0.0,
-                "sensor_name": "elevation_map_scan",
-            },
+            func=sample_neural_elevation_map,
+            params={},
             history_length=1,
             flatten_history_dim=True,
         ),
