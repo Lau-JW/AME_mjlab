@@ -194,7 +194,7 @@ def energy(env: "ManagerBasedRlEnv") -> torch.Tensor:
 
 
 def joint_deviation_arms(env: "ManagerBasedRlEnv") -> torch.Tensor:
-    """Penalize arm joint deviation from default pose."""
+    """Penalize arm joint deviation from default pose (relative, Isaac-style)."""
     try:
         asset = env.scene["robot"]
         jpos = asset.data.joint_pos
@@ -203,13 +203,14 @@ def joint_deviation_arms(env: "ManagerBasedRlEnv") -> torch.Tensor:
                if any(s in n.lower() for s in ["shoulder", "elbow", "wrist"])]
         if not idx:
             return torch.zeros(env.num_envs, device=env.device)
-        return torch.mean(torch.abs(jpos[:, idx]), dim=-1)
+        default = asset.data.default_joint_pos
+        return torch.mean(torch.abs(jpos[:, idx] - default[:, idx]), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 
 
 def joint_deviation_waist(env: "ManagerBasedRlEnv") -> torch.Tensor:
-    """Penalize waist joint deviation from default pose."""
+    """Penalize waist joint deviation from default pose (relative, Isaac-style)."""
     try:
         asset = env.scene["robot"]
         jpos = asset.data.joint_pos
@@ -217,7 +218,8 @@ def joint_deviation_waist(env: "ManagerBasedRlEnv") -> torch.Tensor:
         idx = [i for i, n in enumerate(names) if "waist" in n.lower()]
         if not idx:
             return torch.zeros(env.num_envs, device=env.device)
-        return torch.mean(torch.abs(jpos[:, idx]), dim=-1)
+        default = asset.data.default_joint_pos
+        return torch.mean(torch.abs(jpos[:, idx] - default[:, idx]), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 
@@ -232,7 +234,8 @@ def joint_deviation_legs(env: "ManagerBasedRlEnv") -> torch.Tensor:
                if any(s in n.lower() for s in ["hip", "knee", "ankle"])]
         if not idx:
             return torch.zeros(env.num_envs, device=env.device)
-        return torch.mean(torch.abs(jpos[:, idx]), dim=-1)
+        default = asset.data.default_joint_pos
+        return torch.mean(torch.abs(jpos[:, idx] - default[:, idx]), dim=-1)
     except Exception:
         return torch.zeros(env.num_envs, device=env.device)
 

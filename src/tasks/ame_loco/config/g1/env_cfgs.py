@@ -313,7 +313,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ),
         "energy": RewardTermCfg(func=rwd.energy, weight=-2e-5),
         "joint_deviation_arms": RewardTermCfg(
-            func=rwd.joint_deviation_arms, weight=-0.1,
+            func=rwd.joint_deviation_arms, weight=-0.3,
         ),
         "joint_deviation_waist": RewardTermCfg(
             func=rwd.joint_deviation_waist, weight=-1.0,
@@ -329,7 +329,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             func=rwd.base_height_l2, weight=-3.0,
             params={"target_height": 0.78},
         ),
-        "feet_slide": RewardTermCfg(func=rwd.feet_slide, weight=-0.2),
+        "feet_slide": RewardTermCfg(func=rwd.feet_slide, weight=-0.3),
         "undesired_contacts": RewardTermCfg(
             func=rwd.undesired_contacts, weight=-1.0,
         ),
@@ -337,7 +337,7 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         "dof_torques_limits": RewardTermCfg(
             func=rwd.dof_torques_limits, weight=-0.01,
         ),
-        "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-2.0),
+        "feet_stumble": RewardTermCfg(func=rwd.feet_stumble, weight=-5.0),
         "feet_too_near": RewardTermCfg(
             func=rwd.feet_too_near, weight=-1.0,
             params={"threshold": 0.2},

@@ -28,12 +28,12 @@ SIMPLE_TERRAINS_CFG = TerrainGeneratorCfg(
         "pyramid_stairs": replace(
             _full_sub["pyramid_stairs"],
             proportion=1/3,
-            step_height_range=(0.1, 0.2),
+            step_height_range=(0.15, 0.21),
         ),
         "pyramid_stairs_inv": replace(
             _full_sub["pyramid_stairs_inv"],
             proportion=1/3,
-            step_height_range=(0.1, 0.2),
+            step_height_range=(0.15, 0.21),
         ),
     },
     difficulty_range=(0.0, 1.0),
