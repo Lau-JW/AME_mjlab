@@ -75,6 +75,54 @@ def sample_gt_elevation_map(
     return elevation_map
 
 
+def sample_student_elevation_map(
+    env: "ManagerBasedRlEnv",
+    map_height: int = 18,
+    map_width: int = 13,
+    resolution: float = 0.08,
+    center_x: float = 0.32,
+    center_y: float = 0.0,
+    sensor_name: str = "elevation_map_scan",
+    miss_uncertainty: float = 2.0,
+    hit_uncertainty: float = 0.05,
+    corrupt_prob: float = 0.01,
+    corrupt_uncertainty: float = 1.5,
+) -> torch.Tensor:
+    """Phase-1 student map: GT xyz + heuristic uncertainty (paper 4ch).
+
+    Channel 3 approximates occlusion/noise before the full neural mapper lands:
+      - missed rays → high uncertainty
+      - hits → low uncertainty
+      - random corruptions → random z + high uncertainty (paper ~1%)
+    Shape: (B, 4, H, W)
+    """
+    xyz = sample_gt_elevation_map(
+        env,
+        map_height=map_height,
+        map_width=map_width,
+        resolution=resolution,
+        center_x=center_x,
+        center_y=center_y,
+        sensor_name=sensor_name,
+    )
+    B, _, H, W = xyz.shape
+    u = torch.full(
+        (B, 1, H, W), hit_uncertainty, device=xyz.device, dtype=xyz.dtype
+    )
+    miss = xyz[:, 2:3] <= -9.0
+    u = torch.where(miss, torch.full_like(u, miss_uncertainty), u)
+
+    if corrupt_prob > 0.0 and env.num_envs > 0:
+        corrupt = torch.rand(B, 1, H, W, device=xyz.device) < corrupt_prob
+        if corrupt.any():
+            xyz = xyz.clone()
+            rand_z = torch.empty_like(xyz[:, 2:3]).uniform_(-1.0, 1.0)
+            xyz[:, 2:3] = torch.where(corrupt, rand_z, xyz[:, 2:3])
+            u = torch.where(corrupt, torch.full_like(u, corrupt_uncertainty), u)
+
+    return torch.cat([xyz, u], dim=1)
+
+
 @dataclass
 class OffsetGridPatternCfg:
     size: tuple[float, float]

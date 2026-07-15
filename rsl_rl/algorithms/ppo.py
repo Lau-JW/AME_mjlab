@@ -337,6 +337,9 @@ class PPO:
                 ratio, 1.0 - self.clip_param, 1.0 + self.clip_param
             )
             surrogate_loss = torch.max(surrogate, surrogate_clipped).mean()
+            # AME student: disable PPO surrogate for the first N iterations.
+            surrogate_coef = float(getattr(self, "surrogate_coef", 1.0))
+            surrogate_loss = surrogate_coef * surrogate_loss
 
             # Value function loss
             if self.use_clipped_value_loss:

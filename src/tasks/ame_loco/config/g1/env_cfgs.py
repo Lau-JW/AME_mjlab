@@ -17,6 +17,7 @@ import src.tasks.ame_loco.mdp.ame_terminations as term
 from src.tasks.ame_loco.mdp.map import (
     create_elevation_map_sensor_cfg,
     sample_gt_elevation_map,
+    sample_student_elevation_map,
 )
 from src.tasks.ame_loco.mdp.command import (
     UniformGoalCommandCfg,
@@ -464,3 +465,101 @@ def g1_ame_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         decimation=4,
         episode_length_s=20.0,
     )
+
+
+def g1_ame_student_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
+    """Student env: no base lin-vel, 20-step proprio history, 4ch map.
+
+    Critic keeps privileged single-frame GT 3ch map + lin-vel for value and
+    online teacher distillation (Phase-1; neural mapper comes later).
+    """
+    cfg = g1_ame_env_cfg(play=play)
+    hist = 20
+
+    def _hist(term: ObservationTermCfg) -> ObservationTermCfg:
+        return replace(term, history_length=hist, flatten_history_dim=True)
+
+    actor_terms = {
+        "base_ang_vel": _hist(cfg.observations["actor"].terms["base_ang_vel"]),
+        "projected_gravity": _hist(cfg.observations["actor"].terms["projected_gravity"]),
+        "joint_pos": _hist(cfg.observations["actor"].terms["joint_pos"]),
+        "joint_vel": _hist(cfg.observations["actor"].terms["joint_vel"]),
+        "actions": _hist(cfg.observations["actor"].terms["actions"]),
+        "command": replace(
+            cfg.observations["actor"].terms["command"],
+            history_length=0,
+            flatten_history_dim=True,
+        ),
+        # history_length=1 so map is flattened to 1D like other terms (mjlab concat).
+        "elevation_map": ObservationTermCfg(
+            func=sample_student_elevation_map,
+            params={
+                "map_height": 18,
+                "map_width": 13,
+                "resolution": 0.08,
+                "center_x": 0.32,
+                "center_y": 0.0,
+                "sensor_name": "elevation_map_scan",
+            },
+            history_length=1,
+            flatten_history_dim=True,
+        ),
+    }
+    # Critic: teacher-like privileged single frame (for value + distill targets).
+    critic_terms = {
+        "base_lin_vel": replace(
+            cfg.observations["actor"].terms["base_lin_vel"],
+            history_length=0,
+        )
+        if "base_lin_vel" in cfg.observations["actor"].terms
+        else ObservationTermCfg(func=envs_mdp.base_lin_vel),
+        "base_ang_vel": replace(
+            cfg.observations["actor"].terms["base_ang_vel"], history_length=0
+        ),
+        "projected_gravity": replace(
+            cfg.observations["actor"].terms["projected_gravity"], history_length=0
+        ),
+        "command": ObservationTermCfg(
+            func=goal_command_critic,
+            params={"command_name": "goal"},
+        ),
+        "joint_pos": replace(
+            cfg.observations["actor"].terms["joint_pos"], history_length=0
+        ),
+        "joint_vel": replace(
+            cfg.observations["actor"].terms["joint_vel"], history_length=0
+        ),
+        "actions": replace(
+            cfg.observations["actor"].terms["actions"], history_length=0
+        ),
+        "elevation_map": ObservationTermCfg(
+            func=sample_gt_elevation_map,
+            params={
+                "map_height": 18,
+                "map_width": 13,
+                "resolution": 0.08,
+                "center_x": 0.32,
+                "center_y": 0.0,
+                "sensor_name": "elevation_map_scan",
+            },
+            history_length=1,
+            flatten_history_dim=True,
+        ),
+        "body_contact": cfg.observations["critic"].terms["body_contact"],
+    }
+
+    cfg.observations = {
+        "actor": ObservationGroupCfg(
+            terms=actor_terms,
+            concatenate_terms=True,
+            enable_corruption=not play,
+            history_length=None,
+        ),
+        "critic": ObservationGroupCfg(
+            terms=critic_terms,
+            concatenate_terms=True,
+            enable_corruption=False,
+            history_length=None,
+        ),
+    }
+    return cfg

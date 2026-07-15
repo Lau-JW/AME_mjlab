@@ -13,12 +13,19 @@ from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 class AmeRunnerCfg(RslRlOnPolicyRunnerCfg):
     use_moe_critic: bool = False
     """Use MoE (Mixture-of-Experts) for critic network (Sec IV-B)."""
+    student_mode: bool = False
+    student_history_length: int = 20
+    student_command_dim: int = 3
+    distill_loss_coef: float = 1.0
+    rep_loss_coef: float = 0.1
+    surrogate_disable_iters: int = 5000
 
 
 def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
     """Teacher PPO config (Table VI)."""
     return AmeRunnerCfg(
         use_moe_critic=True,
+        student_mode=False,
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",
@@ -52,13 +59,19 @@ def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
 
 
 def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
-    """Student training config.
+    """Student training config (Phase-1).
 
     PPO surrogate disabled for first 5k iterations.
-    Uses action distillation + representation loss on top of PPO.
+    Action distillation uses recon_loss_coef; map-embed alignment uses vq_loss_coef.
     """
     return AmeRunnerCfg(
         use_moe_critic=True,
+        student_mode=True,
+        student_history_length=20,
+        student_command_dim=3,
+        distill_loss_coef=1.0,
+        rep_loss_coef=0.1,
+        surrogate_disable_iters=5000,
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",

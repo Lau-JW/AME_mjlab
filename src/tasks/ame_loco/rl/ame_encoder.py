@@ -161,6 +161,54 @@ class ProprioEncoder(nn.Module):
         return self.mlp(obs)
 
 
+class LSIOProprioEncoder(nn.Module):
+    """Student proprio encoder with Long-Short I/O over a history stack.
+
+    Paper Sec IV-B: stack past T proprio frames (no lin-vel / command), run LSIO,
+    then fuse with the current command via MLP → proprio embedding.
+    """
+
+    def __init__(
+        self,
+        frame_dim: int = 93,
+        history_length: int = 20,
+        command_dim: int = 3,
+        short_dim: int = 64,
+        long_dim: int = 64,
+        hidden_dim: int = 128,
+        output_dim: int = 64,
+    ):
+        super().__init__()
+        self.frame_dim = frame_dim
+        self.history_length = history_length
+        self.command_dim = command_dim
+
+        self.short_mlp = nn.Sequential(
+            nn.Linear(frame_dim, short_dim), nn.ELU(),
+            nn.Linear(short_dim, short_dim), nn.ELU(),
+        )
+        # Temporal conv over history (B, C, T)
+        self.long_conv = nn.Sequential(
+            nn.Conv1d(frame_dim, long_dim, kernel_size=5, padding=2),
+            nn.ELU(),
+            nn.Conv1d(long_dim, long_dim, kernel_size=5, padding=2),
+            nn.ELU(),
+        )
+        self.fuse = nn.Sequential(
+            nn.Linear(short_dim + long_dim + command_dim, hidden_dim), nn.ELU(),
+            nn.Linear(hidden_dim, hidden_dim), nn.ELU(),
+            nn.Linear(hidden_dim, output_dim),
+        )
+
+    def forward(self, history_flat: torch.Tensor, command: torch.Tensor) -> torch.Tensor:
+        """history_flat: (B, T * frame_dim), command: (B, command_dim)."""
+        B = history_flat.shape[0]
+        hist = history_flat.view(B, self.history_length, self.frame_dim)
+        short = self.short_mlp(hist[:, -1, :])
+        long = self.long_conv(hist.transpose(1, 2)).mean(dim=-1)
+        return self.fuse(torch.cat([short, long, command], dim=-1))
+
+
 class MoECritic(nn.Module):
     """Mixture-of-Experts critic network."""
     def __init__(self, input_dim, num_experts=8, expert_hidden=256, output_dim=1):
