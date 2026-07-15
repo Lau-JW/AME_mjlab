@@ -11,6 +11,7 @@ import numpy as np
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
 
 from rsl_rl.runners.on_policy_runner import _unpack_obs
+from rsl_rl.modules.normalizer import EmpiricalNormalization
 from src.tasks.ame_loco.rl.ame_encoder import (
     ProprioEncoder, AME2Encoder, SimpleMapEncoder, MoECritic, LSIOProprioEncoder,
 )
@@ -501,6 +502,7 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
         cfg.setdefault("surrogate_disable_iters", 5000)
         self._teacher_checkpoint = kwargs.pop("teacher_checkpoint", None)
         self._frozen_teacher = None
+        self._teacher_obs_normalizer = None
         super().__init__(env, cfg, log_dir, device, **kwargs)
         self.alg.surrogate_coef = 1.0
         self.alg.vq_loss_coef = float(cfg.get("rep_loss_coef", 0.1))
@@ -540,16 +542,33 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
             p.requires_grad_(False)
         self._frozen_teacher = teacher
 
+        # Teacher actor obs normalizer (801-d). Required because PPO update batches are
+        # student-normalized; we inverse student critic norm then apply teacher norm.
+        teacher_obs_dim = 99 + 3 * 18 * 13
+        self._teacher_obs_normalizer = EmpiricalNormalization(
+            shape=[teacher_obs_dim], until=1.0e8
+        ).to(self.device)
+        if "obs_norm_state_dict" in ckpt:
+            self._teacher_obs_normalizer.load_state_dict(ckpt["obs_norm_state_dict"])
+            self._teacher_obs_normalizer.eval()
+            print(f"[AME] Teacher obs normalizer loaded (dim={teacher_obs_dim})")
+        else:
+            print("[AME] WARNING: teacher ckpt has no obs_norm_state_dict; using identity scale")
+
     def _wrap_update_for_distill(self) -> None:
         orig_update = self.alg.update
         runner = self
+        # Remember configured entropy so we can restore after warm-start.
+        base_entropy_coef = float(runner.alg.entropy_coef)
 
         def update_with_distill():
             it = runner.current_learning_iteration
             disable_n = int(runner.cfg.get("surrogate_disable_iters", 5000))
-            runner.alg.surrogate_coef = 0.0 if it < disable_n else 1.0
+            warm = it < disable_n
+            runner.alg.surrogate_coef = 0.0 if warm else 1.0
+            # Entropy bonus fights distillation during warm-start (std was climbing).
+            runner.alg.entropy_coef = 0.0 if warm else base_entropy_coef
 
-            # Hook into policy.act used inside PPO.update by patching actor forward.
             actor = runner.alg.policy.actor
             teacher = runner._frozen_teacher
             if teacher is None:
@@ -561,7 +580,6 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
                 mean, s_embed = actor.forward_with_embed(obs)
                 actor._pending_mean = mean
                 actor._pending_embed = s_embed
-                # Filled in evaluate() once critic_obs is available (PPO calls act then evaluate).
                 actor.recon_loss = obs.new_zeros(())
                 actor.vq_loss = obs.new_zeros(())
                 return mean
@@ -576,7 +594,16 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
                     and actor._pending_mean.shape[0] == critic_obs.shape[0]
                 ):
                     with torch.no_grad():
-                        t_obs = _critic_batch_to_teacher_obs(critic_obs)
+                        # critic_obs in the PPO batch is student-normalized.
+                        if hasattr(runner, "privileged_obs_normalizer"):
+                            raw_critic = runner.privileged_obs_normalizer.inverse(critic_obs)
+                        else:
+                            raw_critic = critic_obs
+                        t_raw = _critic_batch_to_teacher_obs(raw_critic)
+                        if runner._teacher_obs_normalizer is not None:
+                            t_obs = runner._teacher_obs_normalizer(t_raw)
+                        else:
+                            t_obs = t_raw
                         t_mean, t_embed = teacher.forward_with_embed(t_obs)
                     actor.recon_loss = torch.nn.functional.mse_loss(
                         actor._pending_mean, t_mean
