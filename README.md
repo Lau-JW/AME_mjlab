@@ -129,9 +129,19 @@ python scripts/play_teacher.py \
 | `--log-root` | `logs/rsl_rl` | 日志根目录 |
 | `--resume` | 无 | 恢复网络、优化器、terrain level 和 curriculum EMA |
 
-### Student Policy（neural mapping，40k iterations）— 未实现
+### Student Policy（Phase-1，40k iterations）
 
-当前 `scripts/train_student.py` 会直接报 `NotImplementedError`。Student 还需要 neural mapping、4 通道 uncertainty map、LSIO/history、teacher action distillation、representation loss，以及前 5k iteration 关闭 PPO surrogate loss 后才是有效的 AME-2 student 复现。
+在线蒸馏 + RL（论文设定）：前 5k iter 关闭 PPO surrogate，同时开 action distillation（log 里 `recon`）与 map embedding alignment（`vq`）。
+
+当前 Phase-1 用 **GT xyz + 启发式 uncertainty** 作为 4 通道 map（neural mapper 后续再接），LSIO 本体感觉 20 步历史、无 base lin-vel。
+
+```bash
+CUDA_VISIBLE_DEVICES=7 python scripts/train_student.py \
+  --teacher-checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_XXXXX.pt \
+  --num-envs 2048
+```
+
+日志：`logs/rsl_rl/g1_ame_student/<timestamp>/`
 
 ## 训练参数
 
