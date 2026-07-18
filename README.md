@@ -131,20 +131,22 @@ python scripts/play_teacher.py \
 
 ### Student Policy（AME-2 neural mapping，40k iterations）
 
-对齐论文 Sec V：
-1. 先训 elevation U-Net mapper（β-NLL）
-2. Student 在线：depth cloud → 局部格网 → U-Net(μ,σ) → 全局 WTA 融合 → 查询 4ch 给 policy
-3. 在线蒸馏 + RL（前 5k 关 surrogate / entropy）
+对齐论文 Sec V（**仅 student 路径**，不影响 teacher）：
+1. 先训 elevation U-Net mapper（β-NLL，默认 30k steps）
+2. Student 在线：depth → U-Net → WTA → 4ch map；前 10k 可混入 GT map curriculum
+3. 在线蒸馏 + RL：前 10k 关 surrogate/entropy；action std 退火；加大 map-embed（vq）权重
 
 ```bash
-# 1) train mapper (~minutes)
-CUDA_VISIBLE_DEVICES=5 python scripts/train_mapper.py \
-  --out logs/mappers/g1_elevation_unet.pt --steps 5000
+# 1) train mapper
+CUDA_VISIBLE_DEVICES=0 python scripts/train_mapper.py \
+  --out logs/mappers/g1_elevation_unet.pt --steps 30000
 
-# 2) train student
+# 2) train / resume student（建议用较强 teacher，如 70k+）
 CUDA_VISIBLE_DEVICES=7 python scripts/train_student.py \
   --teacher-checkpoint logs/rsl_rl/g1_ame_teacher/<run>/model_XXXXX.pt \
   --num-envs 2048
+# resume 示例：
+#   --resume logs/rsl_rl/g1_ame_student/<run>/model_XXXXX.pt
 ```
 
 日志：`logs/rsl_rl/g1_ame_student/<timestamp>/`

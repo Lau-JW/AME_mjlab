@@ -3,7 +3,8 @@
 - Depth cloud → local grid → gated U-Net → global WTA fusion → 4ch egocentric map
 - LSIO proprio history (20 steps, no base lin-vel)
 - PPO + action distillation + map-embedding representation loss
-- PPO surrogate + entropy disabled for the first 5000 iterations
+- Warm-start: surrogate/entropy off (default 10k), std anneal, GT→neural map mix
+- Does not modify teacher training code paths
 """
 
 from __future__ import annotations

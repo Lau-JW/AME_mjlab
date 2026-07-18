@@ -186,8 +186,44 @@ def get_or_create_pipeline(
 def sample_neural_elevation_map(
     env: "ManagerBasedRlEnv",
     mapper_ckpt: str | None = None,
+    map_height: int = POLICY_H,
+    map_width: int = POLICY_W,
+    resolution: float = POLICY_RES,
+    center_x: float = POLICY_CX,
+    center_y: float = 0.0,
+    sensor_name: str = "elevation_map_scan",
     **_: object,
 ) -> torch.Tensor:
-    """Observation term: run AME-2 neural mapping and return 4ch egocentric map."""
+    """Observation term: neural 4ch map, with optional GT mix curriculum.
+
+    ``env._ame_map_gt_mix`` ∈ [0,1] (set by student runner) selects a fraction of
+    envs that observe GT xyz+heuristic-u instead of the neural map. Teacher
+    training never calls this term.
+    """
     pipe = get_or_create_pipeline(env, mapper_ckpt=mapper_ckpt)
-    return pipe.update_and_query(env)
+    neural = pipe.update_and_query(env)
+    mix = float(getattr(env, "_ame_map_gt_mix", 0.0))
+    if mix <= 0.0:
+        return neural
+
+    # Lazy import avoids circular deps with mdp.map.
+    from src.tasks.ame_loco.mdp.map import sample_student_elevation_map
+
+    gt4 = sample_student_elevation_map(
+        env,
+        map_height=map_height,
+        map_width=map_width,
+        resolution=resolution,
+        center_x=center_x,
+        center_y=center_y,
+        sensor_name=sensor_name,
+        corrupt_prob=0.0,
+    )
+    # Match channel layout / spatial size if GT grid differs.
+    if gt4.shape[-2:] != neural.shape[-2:]:
+        gt4 = torch.nn.functional.interpolate(
+            gt4, size=neural.shape[-2:], mode="bilinear", align_corners=False
+        )
+    use_gt = torch.rand(neural.shape[0], device=neural.device) < mix
+    mask = use_gt.view(-1, 1, 1, 1)
+    return torch.where(mask, gt4, neural)

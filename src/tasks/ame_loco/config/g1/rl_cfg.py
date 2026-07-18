@@ -19,6 +19,17 @@ class AmeRunnerCfg(RslRlOnPolicyRunnerCfg):
     distill_loss_coef: float = 1.0
     rep_loss_coef: float = 0.1
     surrogate_disable_iters: int = 5000
+    # Student-only knobs (ignored by teacher training).
+    warm_start_std: float = 1.0
+    """Action noise std at iteration 0 (student)."""
+    final_std: float = 0.35
+    """Target action noise std after std_anneal_iters (student)."""
+    std_anneal_iters: int = 15000
+    """Linearly anneal policy std over this many iterations (student)."""
+    map_gt_mix_start: float = 0.5
+    """Fraction of envs that see GT 4ch map at iter 0 (student curriculum)."""
+    map_gt_mix_iters: int = 10000
+    """GT→neural map mix decays to 0 over this many iters (student)."""
 
 
 def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
@@ -59,10 +70,11 @@ def g1_ame_teacher_runner_cfg() -> AmeRunnerCfg:
 
 
 def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
-    """Student training config (Phase-1).
+    """Student training config (neural mapping + distill).
 
-    PPO surrogate disabled for first 5k iterations.
-    Action distillation uses recon_loss_coef; map-embed alignment uses vq_loss_coef.
+    - Longer BC warm-start (surrogate/entropy off)
+    - Stronger map-embed alignment (vq)
+    - Action-std annealing + GT→neural map curriculum (student-only)
     """
     return AmeRunnerCfg(
         use_moe_critic=True,
@@ -70,8 +82,13 @@ def g1_ame_student_runner_cfg() -> AmeRunnerCfg:
         student_history_length=20,
         student_command_dim=3,
         distill_loss_coef=1.0,
-        rep_loss_coef=0.1,
-        surrogate_disable_iters=5000,
+        rep_loss_coef=0.3,
+        surrogate_disable_iters=10000,
+        warm_start_std=0.5,
+        final_std=0.35,
+        std_anneal_iters=15000,
+        map_gt_mix_start=0.5,
+        map_gt_mix_iters=10000,
         actor=RslRlModelCfg(
             hidden_dims=(512, 256, 128),
             activation="elu",

@@ -490,7 +490,13 @@ def _critic_batch_to_teacher_obs(critic_obs: torch.Tensor) -> torch.Tensor:
 
 
 class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
-    """Student runner: LSIO+4ch actor, frozen teacher distill, 5k surrogate off."""
+    """Student runner: LSIO+4ch actor, frozen teacher distill.
+
+    Student-only extras (do not affect teacher runner):
+      - longer surrogate-off warm-start
+      - action-std annealing for cleaner distill rollouts
+      - GT→neural map mix curriculum via env._ame_map_gt_mix
+    """
 
     def __init__(self, env, cfg, log_dir=None, device="cuda:0", **kwargs):
         cfg = dict(cfg)
@@ -498,18 +504,48 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
         cfg.setdefault("student_history_length", 20)
         cfg.setdefault("student_command_dim", 3)
         cfg.setdefault("distill_loss_coef", 1.0)
-        cfg.setdefault("rep_loss_coef", 0.1)
-        cfg.setdefault("surrogate_disable_iters", 5000)
+        cfg.setdefault("rep_loss_coef", 0.3)
+        cfg.setdefault("surrogate_disable_iters", 10000)
+        cfg.setdefault("warm_start_std", 0.5)
+        cfg.setdefault("final_std", 0.35)
+        cfg.setdefault("std_anneal_iters", 15000)
+        cfg.setdefault("map_gt_mix_start", 0.5)
+        cfg.setdefault("map_gt_mix_iters", 10000)
         self._teacher_checkpoint = kwargs.pop("teacher_checkpoint", None)
         self._frozen_teacher = None
         self._teacher_obs_normalizer = None
         super().__init__(env, cfg, log_dir, device, **kwargs)
         self.alg.surrogate_coef = 1.0
-        self.alg.vq_loss_coef = float(cfg.get("rep_loss_coef", 0.1))
+        self.alg.vq_loss_coef = float(cfg.get("rep_loss_coef", 0.3))
         self.alg.recon_loss_coef = float(cfg.get("distill_loss_coef", 1.0))
         if self._teacher_checkpoint:
             self._load_frozen_teacher(self._teacher_checkpoint)
         self._wrap_update_for_distill()
+
+    def _student_base_env(self):
+        """Unwrap RslRlVecEnvWrapper → ManagerBasedRlEnv when present."""
+        env = self.env
+        return getattr(env, "env", env)
+
+    def _set_map_gt_mix(self, mix: float) -> None:
+        base = self._student_base_env()
+        setattr(base, "_ame_map_gt_mix", float(mix))
+
+    def _anneal_action_std(self, it: int) -> float:
+        """Force policy std along a schedule (student rollouts / distill)."""
+        std0 = float(self.cfg.get("warm_start_std", 0.5))
+        std1 = float(self.cfg.get("final_std", 0.35))
+        n = max(1, int(self.cfg.get("std_anneal_iters", 15000)))
+        t = min(1.0, float(it) / float(n))
+        target = std0 + (std1 - std0) * t
+        policy = self.alg.policy
+        if hasattr(policy, "std"):
+            with torch.no_grad():
+                policy.std.data.fill_(target)
+        elif hasattr(policy, "log_std"):
+            with torch.no_grad():
+                policy.log_std.data.fill_(float(torch.log(torch.tensor(target))))
+        return target
 
     def _load_frozen_teacher(self, path: str) -> None:
         num_actions = self.env.num_actions
@@ -563,11 +599,24 @@ class AMEStudentOnPolicyRunner(AMEOnPolicyRunner):
 
         def update_with_distill():
             it = runner.current_learning_iteration
-            disable_n = int(runner.cfg.get("surrogate_disable_iters", 5000))
+            disable_n = int(runner.cfg.get("surrogate_disable_iters", 10000))
             warm = it < disable_n
             runner.alg.surrogate_coef = 0.0 if warm else 1.0
             # Entropy bonus fights distillation during warm-start (std was climbing).
             runner.alg.entropy_coef = 0.0 if warm else base_entropy_coef
+
+            # Anneal rollout noise + GT→neural map mix (student-only).
+            target_std = runner._anneal_action_std(it)
+            mix_n = max(1, int(runner.cfg.get("map_gt_mix_iters", 10000)))
+            mix0 = float(runner.cfg.get("map_gt_mix_start", 0.5))
+            mix = mix0 * max(0.0, 1.0 - float(it) / float(mix_n))
+            runner._set_map_gt_mix(mix)
+            if it % 500 == 0:
+                print(
+                    f"[AME-Student] it={it} warm={warm} std={target_std:.3f} "
+                    f"map_gt_mix={mix:.3f} recon_c={runner.alg.recon_loss_coef:g} "
+                    f"vq_c={runner.alg.vq_loss_coef:g}"
+                )
 
             actor = runner.alg.policy.actor
             teacher = runner._frozen_teacher
